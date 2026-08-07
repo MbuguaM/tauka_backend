@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Milestone Update + Gift Opportunity{% endblock %}
+{% block content %}
+<h2>Hi {{ supporter_name }},</h2>
+<p>Your student just hit a new milestone on Tauka!</p>
+<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
+  {% if milestone_type == "unit_complete" %}
+  <h3>🎓 Unit Completed</h3>
+  <p>They just finished Unit {{ milestone_data.unit_number }}!</p>
+  {% elif milestone_type == "cefr_level_up" %}
+  <h3>📈 Level Up!</h3>
+  <p>They progressed to <strong>{{ milestone_data.new_level }}</strong>!</p>
+  {% else %}
+  <h3>Milestone Achieved</h3>
+  {% endif %}
+</div>
+<hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
+<h3>Want to accelerate their progress?</h3>
+<p>Gift them 1 or 3 months of Tauka Tutor — premium features that help them practice faster with live cohort sessions and AI-powered feedback.</p>
+<p>
+  <a class="btn" href="{{ web_base_url }}/gifts?supporter_id={{ supporter_id }}&duration=1">Gift 1 Month ($40)</a>
+  &nbsp;
+  <a style="display:inline-block; background:#2ecc71; color:#fff; padding:12px 24px; border-radius:6px; text-decoration:none; font-weight:bold;"
+     href="{{ web_base_url }}/gifts?supporter_id={{ supporter_id }}&duration=3">Gift 3 Months ($120)</a>
+</p>
+<p style="font-size: 12px; color: #999;">
+  <a href="{{ web_base_url }}/supporters/opt-out/{{ supporter_id }}">Stop receiving updates</a>
+</p>
+{% endblock %}

@@ -1,2 +1,7 @@
 .env
+.env.bak.*
 /venv
+
+# Rendered messages from EMAIL_PROVIDER=console — local artefacts, and they
+# contain real recipient addresses from test runs.
+.outbox/

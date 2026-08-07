@@ -9,5 +9,5 @@ def log_usage(user_id, event_type, value):
             "value": value,
             "created_at": datetime.utcnow().isoformat()
         }).execute()
-    except:
+    except Exception:
         pass

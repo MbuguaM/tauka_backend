@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ sender_name }} found a {{ language }} learning platform{% endblock %}
+{% block content %}
+<h2>Hi there,</h2>
+<p><strong>{{ sender_name }}</strong> found a site called Tauka that teaches <strong>{{ language }}</strong> — and thought you might be into it.</p>
+<p>They have a free 10-minute test to gauge your level. Pretty interesting way to see where you stand:</p>
+<div style="margin: 28px 0; text-align: center;">
+  <a class="btn" href="{{ share_url }}">Try the {{ language }} Test</a>
+</div>
+<p style="color: #666; font-size: 14px;">No signup required to take the test.</p>
+{% endblock %}

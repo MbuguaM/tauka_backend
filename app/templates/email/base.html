@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Tauka{% endblock %}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: #f5f5f5; }
+    .wrapper { max-width: 600px; margin: 0 auto; background: #fff; }
+    .header { background: #1e3252; padding: 24px 32px; }
+    .header h1 { color: #64b4ff; margin: 0; font-size: 24px; }
+    .body { padding: 32px; color: #333; line-height: 1.6; }
+    .footer { background: #f5f5f5; padding: 16px 32px; font-size: 12px; color: #999; }
+    .btn { display: inline-block; background: #1e3252; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; }
+    .highlight { color: #1e3252; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <h1>Tauka</h1>
+    </div>
+    <div class="body">
+      {% block content %}{% endblock %}
+    </div>
+    <div class="footer">
+      <p>Tauka Language Learning &bull; <a href="{{ web_base_url | default('https://www.tauka.com') }}">www.tauka.com</a></p>
+      {% if supporter_id %}
+      <p><a href="{{ web_base_url | default('https://www.tauka.com') }}/supporters/unsubscribe/{{ supporter_id }}">Unsubscribe</a></p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

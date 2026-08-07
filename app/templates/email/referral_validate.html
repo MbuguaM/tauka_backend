@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ sender_name }} wants your opinion on Tauka{% endblock %}
+{% block content %}
+<h2>Hi there,</h2>
+<p><strong>{{ sender_name }}</strong> is considering learning <strong>{{ language }}</strong> on a platform called Tauka and wants your opinion — since you actually speak it.</p>
+<p>They'd love it if you could try their 10-minute proficiency test and let them know if it's legit:</p>
+<div style="margin: 28px 0; text-align: center;">
+  <a class="btn" href="{{ share_url }}">Take the {{ language }} Assessment</a>
+</div>
+<p style="color: #666; font-size: 14px;">It's free, takes about 10 minutes, and your feedback will help {{ sender_name }} decide whether to start learning.</p>
+{% endblock %}

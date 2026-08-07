@@ -1,5 +1,6 @@
-from app.core.redis_client import redis_client
+from app.core.redis_client import get_redis
 from datetime import datetime
+import time
 
 # Per-provider default plans.  Keys: requests_per_minute, daily_token_limit,
 # monthly_token_limit.  Image translation counts tokens at a higher rate
@@ -58,25 +59,60 @@ def check_rate_limit(
     day_key = f"tokens:{ns}:day:{now.strftime('%Y%m%d')}"
     month_key = f"tokens:{ns}:month:{now.strftime('%Y%m')}"
 
-    # requests / minute
-    reqs = redis_client.incr(minute_key)
-    if reqs == 1:
-        redis_client.expire(minute_key, 60)
-    if reqs > plan["requests_per_minute"]:
-        return False, "Too many requests"
+    # PY-005: fail open — if Redis is unavailable or a call errors mid-request,
+    # skip the rate-limit check rather than returning a 500 to the client.
+    redis_client = get_redis()
+    if redis_client is None:
+        return True, "OK"
 
-    # tokens / day
-    daily = redis_client.incrby(day_key, tokens)
-    if daily == tokens:
-        redis_client.expire(day_key, 86_400)
-    if daily > plan["daily_token_limit"]:
-        return False, "Daily token limit exceeded"
+    try:
+        # requests / minute
+        reqs = redis_client.incr(minute_key)
+        if reqs == 1:
+            redis_client.expire(minute_key, 60)
+        if reqs > plan["requests_per_minute"]:
+            return False, "Too many requests"
 
-    # tokens / month
-    monthly = redis_client.incrby(month_key, tokens)
-    if monthly == tokens:
-        redis_client.expire(month_key, 2_592_000)
-    if monthly > plan["monthly_token_limit"]:
-        return False, "Monthly token limit exceeded"
+        # tokens / day
+        daily = redis_client.incrby(day_key, tokens)
+        if daily == tokens:
+            redis_client.expire(day_key, 86_400)
+        if daily > plan["daily_token_limit"]:
+            return False, "Daily token limit exceeded"
 
+        # tokens / month
+        monthly = redis_client.incrby(month_key, tokens)
+        if monthly == tokens:
+            redis_client.expire(month_key, 2_592_000)
+        if monthly > plan["monthly_token_limit"]:
+            return False, "Monthly token limit exceeded"
+    except Exception:
+        return True, "OK"
+
+    return True, "OK"
+
+
+def check_anonymous_rate_limit(
+    ip_hash: str,
+    endpoint: str,
+    max_requests: int = 5,
+    window_seconds: int = 3600,
+) -> tuple[bool, str]:
+    """Rate limits anonymous requests by hashed IP and endpoint."""
+    window = int(time.time() // window_seconds)
+    key = f"anon_rate:{endpoint}:{ip_hash}:{window}"
+
+    # PY-005: fail open when Redis is down.
+    redis_client = get_redis()
+    if redis_client is None:
+        return True, "OK"
+
+    try:
+        count = redis_client.incr(key)
+        if count == 1:
+            redis_client.expire(key, window_seconds)
+        if count > max_requests:
+            return False, "Too many requests from this IP"
+    except Exception:
+        return True, "OK"
     return True, "OK"

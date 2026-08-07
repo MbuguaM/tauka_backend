@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Your Tauka Test Result{% endblock %}
+{% block content %}
+<h2>Hi {{ name or "there" }},</h2>
+<p>You've completed the Tauka language proficiency test. Here are your results:</p>
+<h1 class="highlight">{{ cefr_result }}</h1>
+<p>{{ description }}</p>
+<h3>Breakdown by skill:</h3>
+<ul>
+  {% for skill, data in breakdown.items() %}
+  <li><strong>{{ skill | capitalize }}:</strong> {{ data.correct }}/{{ data.total }} ({{ data.pct }}%)</li>
+  {% endfor %}
+</ul>
+<p><a class="btn" href="{{ share_url }}">View &amp; Share Your Result</a></p>
+<p>Ready to start learning? Join Tauka and get personalised lessons.</p>
+{% endblock %}

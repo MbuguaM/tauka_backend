@@ -17,7 +17,11 @@ async def create_call_token(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to create call token: {e}")
 
-    log_usage(user_id, "call_join", 1)
+    # PY-002: usage logging must never raise (per CLAUDE.md).
+    try:
+        log_usage(user_id, "call_join", 1)
+    except Exception:
+        pass
 
     return {
         "token": result["token"],

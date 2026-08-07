@@ -1,0 +1,366 @@
+-- =============================================================================
+-- CONFLICTS & REDUNDANCIES ANALYSIS
+-- =============================================================================
+-- Scope   : missing_definitions.sql  (MD)
+--           additional changes.sql   (AC)
+-- Purpose : Document every conflict, wrong reference, and redundancy that
+--           must be resolved before consolidation. Nothing in this file
+--           is executable — it is a review document only.
+-- Prepared: 2026-05-23
+-- =============================================================================
+--
+-- LEGEND
+--   [C-nn]  Hard conflict — two definitions contradict each other; exactly
+--           one resolution must be chosen before the merged file can be applied.
+--   [W-nn]  Wrong reference — a table/column name that does not exist; the
+--           statement will error or silently do nothing at run time.
+--   [R-nn]  Redundancy — duplicate or overlapping definitions that inflate
+--           the schema without adding value; one copy should be removed.
+-- =============================================================================
+
+
+-- =============================================================================
+-- [C-1]  stripe_customer_id defined on TWO tables
+-- =============================================================================
+-- MD  adds:  app.student.stripe_customer_id   TEXT UNIQUE
+-- AC §1 adds: app.user_profiles.stripe_customer_id  TEXT  (no UNIQUE)
+--
+-- The Python backend (stripe_service.py) queries app.student.stripe_customer_id
+-- for Stripe webhook operations.  The Flutter frontend could read
+-- app.user_profiles.stripe_customer_id for display.  If both columns are
+-- populated independently they will drift out of sync.
+--
+-- RESOLUTION (choose one):
+--   A. Authoritative on app.student (Python owns Stripe).
+--      Remove stripe_customer_id from the app.user_profiles ALTER in AC §1.
+--      Flutter must join through app.student to read it.
+--   B. Authoritative on app.user_profiles.
+--      Remove from app.student; update all Python services to query
+--      supabase.schema("app").table("student") joined to user_profiles.
+--   C. Keep both but add a trigger to keep them in sync (extra complexity,
+--      risk of drift on failure).
+--   RECOMMENDED: Option A — Python owns Stripe, keep on app.student.
+
+-- =============================================================================
+-- [C-2]  stripe_subscription_id defined on TWO tables
+-- =============================================================================
+-- MD  adds:  app.student.stripe_subscription_id   TEXT
+-- AC §16 adds: app.user_profiles.stripe_subscription_id  TEXT
+--
+-- Same drift risk as [C-1].
+-- RESOLUTION: Same as [C-1] — keep authoritative copy on app.student only.
+--   Remove stripe_subscription_id from the AC §16 ALTER TABLE app.user_profiles.
+
+-- =============================================================================
+-- [C-3]  subscription_tier (app.user_profiles) vs tier (app.student)
+-- =============================================================================
+-- MD  adds:  app.student.tier TEXT DEFAULT 'free'
+--             (values: 'free' | 'learner' | 'tutor' | 'intensive')
+-- AC §1 adds: app.user_profiles.subscription_tier TEXT DEFAULT 'free'
+--             (values: 'free' | 'learner' | 'tutor_tier' | 'intensive')
+--
+-- The value set differs: MD uses 'tutor', AC uses 'tutor_tier'.
+-- The Python tier_service.py writes to app.student.tier.
+-- The Flutter TierGatingService (AC §26) reads app.tier_gating_rules.min_tier
+-- which uses 'tutor_tier' spelling.
+-- The AC §41 policy on app.profiles references subscription_tier.
+--
+-- RESOLUTION:
+--   1. Pick ONE canonical spelling: recommend 'tutor' (simpler, already used
+--      in Python services and tier_gating_rules seed should match).
+--      OR keep 'tutor_tier' and update Python services.
+--   2. Keep tier authoritative on app.student (Python-owned).
+--   3. Add app.user_profiles.subscription_tier as a DENORMALISED read cache
+--      updated by trigger from app.student.tier — or have Flutter always
+--      read app.student via the Python API rather than querying directly.
+--   4. If kept as a cache column, add a trigger:
+--      CREATE OR REPLACE FUNCTION app.sync_student_tier_to_profile()
+--      RETURNS TRIGGER LANGUAGE plpgsql AS $$
+--      BEGIN
+--        UPDATE app.user_profiles SET subscription_tier = NEW.tier
+--        WHERE id = NEW.id;
+--        RETURN NEW;
+--      END; $$;
+--      CREATE TRIGGER trg_sync_tier
+--        AFTER INSERT OR UPDATE OF tier ON app.student
+--        FOR EACH ROW EXECUTE FUNCTION app.sync_student_tier_to_profile();
+
+-- =============================================================================
+-- [C-4]  Streak tracked in two places with different column names
+-- =============================================================================
+-- MD  adds:  app.student.current_streak    INT  DEFAULT 0
+--            (Python milestone_service.py reads/writes this)
+-- AC §16 adds: app.user_profiles.streak_days  INT  DEFAULT 0
+--              (Flutter app.update_user_streak() writes this)
+--              (AC §43 cron job resets this)
+--
+-- Both columns track how many consecutive days a student has been active.
+-- If both are populated they can diverge.
+--
+-- RESOLUTION:
+--   Keep both but designate clearly:
+--   - app.student.current_streak = Python-validated milestone streak
+--   - app.user_profiles.streak_days = Flutter optimistic client-side streak
+--   The Python backend should periodically reconcile (e.g. on login).
+--   OR remove app.user_profiles.streak_days and have Flutter read from
+--   the Python /account endpoint which sources from app.student.
+--   Document the chosen authority in CLAUDE.md.
+
+-- =============================================================================
+-- [C-5]  app.achievements and app.user_achievements defined TWICE in AC
+-- =============================================================================
+-- AC §28 creates app.achievements with:
+--   icon_name TEXT  (nullable),  xp_reward INT DEFAULT 0
+--   Seeds 11 rows with xp_rewards: 10, 50, 200, 75, 30, 5, 50, 15, 25, 30, 150
+--
+-- AC §35 creates app.achievements AGAIN with:
+--   icon_name TEXT NOT NULL DEFAULT 'star',  xp_reward INT NOT NULL DEFAULT 50
+--   Seeds 11 rows with SAME keys but DIFFERENT xp_rewards and descriptions.
+--   ON CONFLICT (key) DO NOTHING silently discards §35 seeds if §28 ran first.
+--
+-- RESOLUTION:
+--   Drop §35 entirely. Merge the seed data into §28 using the §35 values
+--   (higher xp_rewards, more detailed descriptions) as the canonical set.
+--   Use ON CONFLICT (key) DO UPDATE SET xp_reward = EXCLUDED.xp_reward,
+--   description = EXCLUDED.description to allow future re-runs to update seeds.
+
+-- =============================================================================
+-- [C-6]  app.user_achievements RLS defined in THREE places
+-- =============================================================================
+-- AC §28 creates:
+--   "user_achievements_select_own_or_tutor_admin"  (FOR SELECT)
+--   "user_achievements_insert_own"                 (FOR INSERT)
+--
+-- AC §35 creates:
+--   "Users can read own achievements"              (FOR SELECT)
+--   "Service role can insert achievements"         (FOR INSERT)
+--
+-- AC §36 DO $$ block creates:
+--   ua_own_select   (FOR SELECT)
+--   ua_service_insert (FOR INSERT)
+--
+-- Six policies for one table — all redundant after the first pair.
+-- DROP POLICY IF EXISTS prevents immediate failure but leaves dead policies.
+--
+-- RESOLUTION:
+--   Keep only the §28 pair (most explicit names). Remove §35 and §36 copies.
+
+-- =============================================================================
+-- [W-1]  app.profiles does not exist — should be app.user_profiles
+-- =============================================================================
+-- AC §41 references app.profiles in:
+--   DROP POLICY IF EXISTS "users can update own profile" ON app.profiles;
+--   CREATE POLICY "users update own profile" ON app.profiles ...
+--   WITH CHECK (... FROM app.profiles WHERE id = auth.uid() ...)
+--
+-- AC §43 (streak-reset cron job) references:
+--   UPDATE app.profiles SET streak_days = 0 ...
+--
+-- The table is app.user_profiles throughout the entire schema.
+-- DROP POLICY IF EXISTS silently ignores this, but CREATE POLICY and the
+-- cron UPDATE will fail with "relation app.profiles does not exist".
+--
+-- RESOLUTION: Replace every instance of app.profiles with app.user_profiles.
+
+-- =============================================================================
+-- [W-2]  host_id column does not exist on app.video_sessions
+-- =============================================================================
+-- AC §42 creates policy "tutor reads session participants":
+--   USING (
+--     auth.uid() = user_id
+--     OR auth.uid() IN (
+--       SELECT host_id FROM app.video_sessions         -- WRONG COLUMN
+--       WHERE id = session_participants.session_id
+--     )
+--   )
+--
+-- app.video_sessions (created in AC §24) uses tutor_id, not host_id.
+-- This policy will fail at query time with "column host_id does not exist".
+--
+-- RESOLUTION: Replace host_id with tutor_id.
+
+-- =============================================================================
+-- [W-3]  tutor_assignment.student_id is the TUTOR'S id, not a student FK
+-- =============================================================================
+-- AC §42 creates policies for exercise_sessions and progress_snapshots:
+--   auth.uid() IN (
+--     SELECT tutor_id FROM app.tutor_assignment
+--     WHERE student_id = exercise_sessions.user_id    -- WRONG SEMANTICS
+--   )
+--
+-- current database state.sql documents explicitly:
+--   "the column named student_id actually stores the tutor's id
+--    (FK -> app.tutor). The name is misleading."
+-- app.tutor_assignment does NOT have a direct student FK — it links
+-- tutors to COURSES (tutor_id, course_id). Filtering by student_id
+-- (which is really tutor_id) = a student's user_id will never match.
+-- The intent was "tutors can see their assigned students' data", but
+-- tutor_assignment cannot express this directly.
+--
+-- Since missing_definitions.sql added app.student.tutor_id, the correct
+-- subquery is:
+--   auth.uid() IN (
+--     SELECT tutor_id FROM app.student
+--     WHERE id = exercise_sessions.user_id
+--       AND tutor_id IS NOT NULL
+--   )
+--
+-- RESOLUTION: Replace both §42 subqueries with the app.student-based version.
+
+-- =============================================================================
+-- [W-4]  app.user_profiles.subscription_tier value 'tutor_tier' vs 'tutor'
+-- =============================================================================
+-- AC §1 CHECK: subscription_tier IN ('free','learner','tutor_tier','intensive')
+-- AC §26 seed: min_tier values include 'tutor_tier'
+-- MD app.student.tier uses: 'free' | 'learner' | 'tutor' | 'intensive'
+-- Python tier_service.py uses: 'learner' | 'tutor' | 'intensive'
+--
+-- If Flutter reads subscription_tier from app.user_profiles expecting 'tutor_tier'
+-- but the Python backend writes 'tutor' to app.student.tier, the sync
+-- mechanism will insert a value that violates the user_profiles CHECK constraint.
+--
+-- RESOLUTION: Align on a single spelling before adding the sync trigger.
+--   Recommend 'tutor' everywhere; update AC §1 CHECK, AC §26 seed, and
+--   tier_gating_rules seed to use 'tutor' instead of 'tutor_tier'.
+
+-- =============================================================================
+-- [W-5]  Missing updated_at triggers for app.student and app.tutor
+-- =============================================================================
+-- MD adds updated_at to app.student and app.tutor but creates no triggers.
+-- The existing function app.set_updated_at() in current database state.sql §9
+-- is available and should be wired up.
+-- Without triggers, updated_at will only reflect the initial DEFAULT now()
+-- and will never auto-update on subsequent writes.
+--
+-- RESOLUTION: Add in consolidated file:
+--   CREATE TRIGGER trg_student_updated_at
+--     BEFORE UPDATE ON app.student
+--     FOR EACH ROW EXECUTE FUNCTION app.set_updated_at();
+--
+--   CREATE TRIGGER trg_tutor_updated_at
+--     BEFORE UPDATE ON app.tutor
+--     FOR EACH ROW EXECUTE FUNCTION app.set_updated_at();
+
+-- =============================================================================
+-- [R-1]  app.tutor_availability and app.tutor_payout_settings reference
+--         auth.users instead of app.tutor
+-- =============================================================================
+-- MD creates both tables with:
+--   tutor_id  uuid NOT NULL REFERENCES auth.users(id)
+--
+-- Any authenticated user could theoretically have availability slots or payout
+-- settings, not just users in app.tutor. The FK should enforce tutor-ness.
+--
+-- RESOLUTION: Change REFERENCES auth.users(id) to REFERENCES app.tutor(id)
+--   for the tutor_id columns in both tables.
+
+-- =============================================================================
+-- [R-2]  Three overlapping "session" tables with ambiguous scope
+-- =============================================================================
+-- current database state.sql §B7 creates:
+--   app.video_session        (singular) — scheduled sessions
+-- AC §24 creates:
+--   app.video_sessions       (plural)   — also scheduled sessions
+--                             (explicitly notes the naming conflict with Flutter)
+-- MD creates:
+--   app.tutor_sessions                  — completed sessions for earnings
+--
+-- app.video_session and app.video_sessions have overlapping purpose.
+-- AC §24 notes: "Flutter code references app.video_sessions (plural)".
+-- §B7 and §24 both create scheduling tables. If both are applied they
+-- coexist as separate tables and neither references the other.
+--
+-- RESOLUTION before consolidation:
+--   Decide whether §B7 (app.video_session, singular) is still needed.
+--   If Flutter exclusively uses video_sessions (plural, §24), drop §B7.
+--   If both are needed, add a FK or a VIEW mapping one to the other.
+--   app.tutor_sessions is intentionally distinct (earnings history).
+--   Document the distinction in comments.
+
+-- =============================================================================
+-- [R-3]  Two session-rating tables
+-- =============================================================================
+-- AC §3  creates: app.video_session_rating  (linked to singular video_session)
+-- AC §24 creates: app.session_ratings       (linked to plural video_sessions)
+--
+-- Whichever session table survives [R-2] should be the one with a rating table.
+-- The other rating table is redundant.
+--
+-- RESOLUTION: Resolve [R-2] first, then keep only the matching rating table.
+
+-- =============================================================================
+-- [R-4]  app.exercise_sessions (AC §18) vs app.exercise_result (DB §B8)
+-- =============================================================================
+-- current database state.sql §B8 creates app.exercise_result with:
+--   score, total, elapsed_seconds, answers, submitted_at, synced_at
+-- AC §18 creates app.exercise_sessions with:
+--   score, max_score, answers, started_at, completed_at
+--
+-- Both record exercise attempt data for the same user. The schemas differ
+-- but the purpose overlaps. If both are applied, the application must
+-- choose which to write to and which to read from.
+--
+-- RESOLUTION: Designate one as canonical.
+--   Recommend app.exercise_sessions (§18) — richer lifecycle tracking.
+--   Deprecate app.exercise_result (§B8) or rename it to exercise_result_legacy.
+
+-- =============================================================================
+-- [R-5]  §36 DO block re-creates RLS policies already defined in §18–§24
+-- =============================================================================
+-- AC §36 (RLS policy audit) uses a DO $$ EXCEPTION block to "safely" create
+-- the same policies that §18 (exercise_sessions), §19 (flashcard_reviews),
+-- §20 (voice_recordings), §21 (broadcast_reads), §22 (push_tokens),
+-- §23 (content_versions), and §28 (user_achievements) already created.
+--
+-- The DO block adds no new behaviour — it only re-runs CREATE POLICY with a
+-- duplicate_object handler. The original CREATE POLICY statements already
+-- include DROP POLICY IF EXISTS before them.
+--
+-- RESOLUTION: Remove the §36 DO $$ block entirely; it is fully redundant.
+
+-- =============================================================================
+-- [R-6]  cohort_memberships vs class_members partial overlap
+-- =============================================================================
+-- current database state.sql §2 has:
+--   app.class_members  (class_id, user_id, role, subclass_id)
+-- AC §25 creates:
+--   app.cohort_memberships (cohort_id, user_id, status)
+--
+-- Both record group membership. AC comments say "cohorts are admin-managed
+-- groups that may map to one or more class sections" — implying cohorts and
+-- classes are intentionally different entities.
+--
+-- RESOLUTION: Document this is intentional. If in practice cohorts ARE
+--   classes, collapse; otherwise keep both with clear comments.
+--   No code change required, but add a comment in the consolidated file.
+
+-- =============================================================================
+-- RESOLUTION SUMMARY (ordered by priority)
+-- =============================================================================
+--
+--   MUST FIX BEFORE APPLYING (will cause runtime errors):
+--     [W-1] Replace app.profiles → app.user_profiles  (§41, §43)
+--     [W-2] Replace host_id → tutor_id  (§42 session_participants policy)
+--     [W-3] Replace tutor_assignment subquery → app.student subquery (§42)
+--     [W-4] Align tier spelling 'tutor_tier' → 'tutor' everywhere
+--
+--   MUST FIX TO AVOID DATA DRIFT:
+--     [C-1] Remove stripe_customer_id from app.user_profiles ALTER (§1)
+--     [C-2] Remove stripe_subscription_id from app.user_profiles ALTER (§16)
+--     [C-3] Decide tier authority; add sync trigger if keeping both columns
+--
+--   SHOULD FIX (correctness / maintainability):
+--     [W-5] Add updated_at triggers for app.student and app.tutor
+--     [R-1] Change tutor_availability/tutor_payout_settings FK to app.tutor(id)
+--     [C-4] Document streak authority (student.current_streak vs user_profiles.streak_days)
+--
+--   CLEAN UP (remove duplication):
+--     [C-5] Remove §35 achievements/user_achievements duplicate definitions
+--     [C-6] Remove §35 and §36 user_achievements RLS duplicates
+--     [R-5] Remove §36 DO $$ policy audit block
+--
+--   DESIGN DECISIONS NEEDED (cannot auto-resolve):
+--     [R-2] Resolve video_session vs video_sessions naming — consult Flutter team
+--     [R-3] Remove one of video_session_rating / session_ratings after [R-2]
+--     [R-4] Deprecate exercise_result or exercise_sessions — pick one
+-- =============================================================================

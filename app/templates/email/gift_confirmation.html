@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Your Tauka Gift is Confirmed{% endblock %}
+{% block content %}
+<h2>Thank you, {{ supporter_name }}!</h2>
+<p>Your gift has been successfully processed. Here are the details:</p>
+<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
+  <p><strong>Duration:</strong> {{ duration_months }} month{% if duration_months > 1 %}s{% endif %} of Tauka Tutor</p>
+  <p><strong>Access expires:</strong> {{ expires_at }}</p>
+  {% if receipt_url %}
+  <p><a href="{{ receipt_url }}">View your receipt</a></p>
+  {% endif %}
+</div>
+<p>Your student has been notified and their account has been upgraded. We'll keep you updated on their progress.</p>
+<p>Thank you for investing in their language learning journey!</p>
+{% endblock %}

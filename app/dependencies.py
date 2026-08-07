@@ -11,12 +11,9 @@ def get_current_user(
 ) -> str:
     """
     Verify the Supabase-issued JWT and return the user's UUID (sub claim).
-
     Raises 401 if the token is missing, expired, or has an invalid signature.
-    The returned string is used in place of any user_id / sender_id field in
-    request bodies, so callers can never spoof another user's identity.
     """
-    if not settings.SUPABASE_JWT_SECRET:
+    if not settings.supabase_jwt_secret:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="SUPABASE_JWT_SECRET is not configured",
@@ -25,7 +22,7 @@ def get_current_user(
     try:
         payload = jwt.decode(
             credentials.credentials,
-            settings.SUPABASE_JWT_SECRET,
+            settings.supabase_jwt_secret,
             algorithms=["HS256"],
             options={"require": ["sub", "exp"]},
         )
@@ -43,3 +40,35 @@ def get_current_user(
         )
 
     return payload["sub"]
+
+
+async def require_tutor(user_id: str = Depends(get_current_user)) -> str:
+    """Raises 403 if the authenticated user does not have the tutor role."""
+    from app.services.supabase_client import supabase_admin as db
+    try:
+        user_result = db.auth.admin.get_user_by_id(user_id)
+        app_meta = (user_result.user.app_metadata or {}) if user_result and user_result.user else {}
+        role = app_meta.get("role", "")
+        if role != "tutor":
+            raise HTTPException(status_code=403, detail="Tutor access required")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="Could not verify tutor role")
+    return user_id
+
+
+async def require_admin(user_id: str = Depends(get_current_user)) -> str:
+    """Raises 403 if the authenticated user does not have the admin role."""
+    from app.services.supabase_client import supabase_admin as db
+    try:
+        user_result = db.auth.admin.get_user_by_id(user_id)
+        app_meta = (user_result.user.app_metadata or {}) if user_result and user_result.user else {}
+        role = app_meta.get("role", "")
+        if role != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Could not verify admin role")
+    return user_id

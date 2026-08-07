@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Your Tauka Access Expires Soon{% endblock %}
+{% block content %}
+<h2>Your gifted access expires soon</h2>
+{% if message %}
+<p>{{ message }}</p>
+{% else %}
+<p>Your Tauka Tutor access expires on <strong>{{ expires_at }}</strong> — that's {{ days_left }} day{% if days_left != 1 %}s{% endif %} away.</p>
+<p>Don't lose your streak! Subscribe to keep learning after your gift ends.</p>
+<div style="margin: 24px 0;">
+  <p><a class="btn" href="{{ app_base_url | default('https://app.tauka.com') }}/subscription">Continue with Tauka</a></p>
+</div>
+<p style="font-size: 14px; color: #666;">Or continue with a free account and learn at your own pace.</p>
+{% endif %}
+{% endblock %}

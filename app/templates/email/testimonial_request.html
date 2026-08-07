@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Share Your Experience with Tauka{% endblock %}
+{% block content %}
+<h2>Hi {{ supporter_name }},</h2>
+<p>Thank you for gifting a Tauka subscription. Your generosity helped your student make real progress in their language learning journey.</p>
+<p>Would you be willing to share a quick quote about your experience supporting a Tauka learner? Your words could inspire other supporters to invest in language education.</p>
+<p>It only takes 2 minutes:</p>
+<div style="margin: 24px 0;">
+  <a class="btn" href="{{ submit_url }}">Share My Experience</a>
+  &nbsp;&nbsp;
+  <a href="{{ decline_url }}" style="color: #999; font-size: 14px;">No thanks</a>
+</div>
+<p style="font-size: 14px; color: #666;">Your quote will be reviewed before publishing, and you can choose how your name appears (or stay anonymous).</p>
+{% endblock %}

@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.post("/send")
-def send_message(
+async def send_message(
     req: MessageRequest,
     user_id: str = Depends(get_current_user),
 ):
@@ -19,7 +19,13 @@ def send_message(
     if not allowed:
         raise HTTPException(status_code=429, detail=reason)
 
-    store_message(req.conversation_id, user_id, req.content)
-    log_usage(user_id, "message", tokens)
+    message = await store_message(req.conversation_id, user_id, req.content)
 
-    return {"status": "sent"}
+    # PY-002: usage logging must never raise (per CLAUDE.md). The service guards
+    # internally, but wrap here too so a transient failure cannot 500 the client.
+    try:
+        log_usage(user_id, "message", tokens)
+    except Exception:
+        pass
+
+    return {"status": "sent", "message": message}

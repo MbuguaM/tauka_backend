@@ -43,7 +43,7 @@ def make_token(user_id: str = TEST_USER_ID, expired: bool = False) -> str:
 @pytest.fixture(autouse=True)
 def patch_jwt_secret(monkeypatch):
     """Point the JWT dependency at the test secret for every test."""
-    monkeypatch.setattr("app.dependencies.settings.SUPABASE_JWT_SECRET", TEST_JWT_SECRET)
+    monkeypatch.setattr("app.dependencies.settings.supabase_jwt_secret", TEST_JWT_SECRET)
 
 
 @pytest.fixture

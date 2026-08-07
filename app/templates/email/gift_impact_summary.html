@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}See the Impact of Your Gift{% endblock %}
+{% block content %}
+<h2>Hi {{ supporter_name }},</h2>
+<p>Your {{ duration_description }} gift to your student has made a real difference. Here's what they accomplished:</p>
+<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
+      <div style="font-size: 32px; font-weight: bold; color: #1e3252;">{{ lessons_completed }}</div>
+      <div>lessons completed</div>
+    </div>
+    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
+      <div style="font-size: 32px; font-weight: bold; color: #1e3252;">{{ sessions_attended }}</div>
+      <div>live sessions</div>
+    </div>
+    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
+      <div style="font-size: 32px; font-weight: bold; color: #1e3252;">{{ best_streak }}</div>
+      <div>day streak</div>
+    </div>
+    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
+      <div style="font-size: 24px; font-weight: bold; color: #2ecc71;">{{ level_progress }}</div>
+      <div>level progress</div>
+    </div>
+  </div>
+</div>
+<p>Want to keep their momentum going? Gift another month of access.</p>
+<p><a class="btn" href="{{ web_base_url | default('https://www.tauka.com') }}/gifts?supporter_id={{ supporter_id }}">Renew Their Gift</a></p>
+{% endblock %}

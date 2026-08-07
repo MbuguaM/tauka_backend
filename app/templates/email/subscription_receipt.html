@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Your Tauka Subscription{% endblock %}
+{% block content %}
+{% if message %}
+<h2>Action Required</h2>
+<p>{{ message }}</p>
+<p><a class="btn" href="{{ app_base_url | default('https://app.tauka.com') }}/billing">Update Payment Method</a></p>
+{% else %}
+<h2>You're all set!</h2>
+<p>Your <strong>Tauka {{ tier | capitalize }}</strong> subscription is now active.</p>
+<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
+  <p><strong>Plan:</strong> Tauka {{ tier | capitalize }}</p>
+</div>
+<p><a class="btn" href="{{ app_base_url | default('https://app.tauka.com') }}">Start Learning</a></p>
+{% endif %}
+{% endblock %}

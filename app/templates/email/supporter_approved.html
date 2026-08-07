@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ supporter_name }} recommends Tauka for you{% endblock %}
+{% block content %}
+<h2>Great news!</h2>
+<p><strong>{{ supporter_name }}</strong> has taken the Tauka language proficiency test and recommends the platform for your language learning journey.</p>
+{% if note %}
+<blockquote style="border-left: 4px solid #64b4ff; padding-left: 16px; color: #555;">
+  "{{ note }}"
+</blockquote>
+{% endif %}
+<p><a class="btn" href="{{ app_base_url }}">Start Learning on Tauka</a></p>
+{% endblock %}
