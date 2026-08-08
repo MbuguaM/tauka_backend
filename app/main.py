@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routes import (
@@ -76,6 +77,33 @@ app.include_router(tutor_portal.router, prefix="/tutor")
 
 # Externally-triggered scheduled jobs (Vercel Cron). Guarded by CRON_SECRET.
 app.include_router(tasks.router, prefix="/tasks")
+
+
+@app.exception_handler(404)
+async def not_found(request: Request, exc):
+    """
+    Report the path the application actually received.
+
+    A bare `{"detail":"Not Found"}` cannot distinguish "you asked for a route
+    that does not exist" from "the platform rewrote your URL before we saw it" —
+    and on Vercel the second is a real failure mode: a catch-all `rewrites` entry
+    replaces the request path with the function's own path, so EVERY route 404s,
+    including FastAPI's own /docs and /openapi.json. That looked identical to a
+    missing route and cost a deploy cycle to identify.
+
+    If `path` below is not the URL you requested, the routing config is the bug,
+    not the application.
+    """
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "Not Found", "path": request.url.path},
+    )
+
+
+@app.get("/")
+async def root():
+    """A front door that proves the deployment works, rather than a bare 404."""
+    return {"service": "tauka-python", "status": "ok", "docs": "/docs"}
 
 
 @app.get("/health")
