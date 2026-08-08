@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     # (GET /supporters/unsubscribe/{id}, /supporters/opt-out/{id}, both
     # HTMLResponse), NOT to pages on the marketing site. Templates built those
     # two links from web_base_url, which 404s on the React router.
-    api_base_url: str = "https://backend.tauka.io"
+    api_base_url: str = "https://api.tauka.io"
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated browser origins allowed to call this API. The browser

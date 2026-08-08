@@ -101,7 +101,7 @@ Required variables in `.env`:
 | `SMTP_SSL` | No | Default `false`. Set `true` for port 465 (implicit TLS) |
 | `CORS_ORIGINS` | No | Comma-separated browser origins allowed to call this API |
 | `WEB_BASE_URL` | No | Marketing site URL (default: `https://tauka.io`). Injected into every email template |
-| `API_BASE_URL` | No | This service's public origin (default: `https://backend.tauka.io`). Email unsubscribe/opt-out links resolve to FastAPI routes here, not to the site |
+| `API_BASE_URL` | No | This service's public origin (default: `https://api.tauka.io`). Email unsubscribe/opt-out links resolve to FastAPI routes here, not to the site |
 
 There is **no `APP_BASE_URL`** — removed 2026-08-08. Every destination this service
 emits is a browser URL: Stripe `success_url` / `cancel_url` / `return_url`, and the
