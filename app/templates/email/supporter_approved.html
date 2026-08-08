@@ -1,12 +1,46 @@
 {% extends "base.html" %}
-{% block title %}{{ supporter_name }} recommends Tauka for you{% endblock %}
+{% import "_macros.html" as ui %}
+{#  Sent by referral_service.handle_approval when a validate-intent referral is
+    approved. Two audiences: a visitor with no account (ask: sign up) and an
+    existing learner (ask: look at your supporters). A prospect must never be
+    linked to /account, hence the footer switch. #}
+{% set is_student = audience == "student" %}
+{% set footer_audience = "student" if is_student else "prospect" %}
+{% block title %}{{ supporter_name }} recommends Tauka{% endblock %}
+{% block preheader %}{{ supporter_name }} took the assessment and vouched for Tauka.{% endblock %}
 {% block content %}
-<h2>Great news!</h2>
-<p><strong>{{ supporter_name }}</strong> has taken the Tauka language proficiency test and recommends the platform for your language learning journey.</p>
+
+{{ ui.eyebrow("Vouched for") }}
+
+{% if is_student %}
+
+{{ ui.heading(supporter_name ~ " approved Tauka for you.") }}
+{{ ui.p(supporter_name ~ " tried the assessment and backed the platform. They now appear on your supporters page — and they can gift you access from there.") }}
+<div style="margin:28px 0;">{{ ui.button(web_base_url ~ "/account/supporters", "See your supporters") }}</div>
+
+{% else %}
+
+{{ ui.heading("Hi " ~ sender_name ~ ",") }}
+{{ ui.p(supporter_name ~ " tried the Tauka assessment and recommends it for your " ~ language ~ " learning.") }}
+
 {% if note %}
-<blockquote style="border-left: 4px solid #64b4ff; padding-left: 16px; color: #555;">
-  "{{ note }}"
-</blockquote>
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0;">
+  <tr>
+    <td style="padding:4px 0 4px 20px;border-left:3px solid #EF6C00;font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:21px;line-height:1.35;color:#1A1610;">
+      &ldquo;{{ note }}&rdquo;
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-style:normal;font-size:13px;color:#7B7464;padding-top:10px;">&mdash; {{ supporter_name }}</div>
+    </td>
+  </tr>
+</table>
 {% endif %}
-<p><a class="btn" href="{{ app_base_url }}">Start Learning on Tauka</a></p>
+
+<div style="margin:28px 0;">{{ ui.button(signup_link or (web_base_url ~ "/signup"), "Start learning " ~ language) }}</div>
+
+{{ ui.divider() }}
+
+{{ ui.p("One year to fluency, two to professional proficiency — a time-bound programme built on the FSI tradition.") }}
+<div style="margin-top:6px;">{{ ui.quiet_link(web_base_url ~ "/curriculum", "See the curriculum") }}</div>
+
+{% endif %}
+
 {% endblock %}

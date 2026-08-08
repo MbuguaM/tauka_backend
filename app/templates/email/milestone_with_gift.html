@@ -1,29 +1,47 @@
 {% extends "base.html" %}
-{% block title %}Milestone Update + Gift Opportunity{% endblock %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "supporter" %}
+{% block title %}Milestone Update{% endblock %}
+{% block preheader %}Your student reached a new milestone — and you can accelerate what comes next.{% endblock %}
 {% block content %}
-<h2>Hi {{ supporter_name }},</h2>
-<p>Your student just hit a new milestone on Tauka!</p>
-<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
-  {% if milestone_type == "unit_complete" %}
-  <h3>🎓 Unit Completed</h3>
-  <p>They just finished Unit {{ milestone_data.unit_number }}!</p>
-  {% elif milestone_type == "cefr_level_up" %}
-  <h3>📈 Level Up!</h3>
-  <p>They progressed to <strong>{{ milestone_data.new_level }}</strong>!</p>
-  {% else %}
-  <h3>Milestone Achieved</h3>
-  {% endif %}
-</div>
-<hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-<h3>Want to accelerate their progress?</h3>
-<p>Gift them 1 or 3 months of Tauka Tutor — premium features that help them practice faster with live cohort sessions and AI-powered feedback.</p>
-<p>
-  <a class="btn" href="{{ web_base_url }}/gifts?supporter_id={{ supporter_id }}&duration=1">Gift 1 Month ($40)</a>
-  &nbsp;
-  <a style="display:inline-block; background:#2ecc71; color:#fff; padding:12px 24px; border-radius:6px; text-decoration:none; font-weight:bold;"
-     href="{{ web_base_url }}/gifts?supporter_id={{ supporter_id }}&duration=3">Gift 3 Months ($120)</a>
-</p>
-<p style="font-size: 12px; color: #999;">
-  <a href="{{ web_base_url }}/supporters/opt-out/{{ supporter_id }}">Stop receiving updates</a>
-</p>
+
+{{ ui.eyebrow("Progress report") }}
+{{ ui.heading("Hi " ~ supporter_name ~ ",") }}
+{{ ui.p("Your student just reached a new milestone.") }}
+
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0;">
+  <tr>
+    <td bgcolor="#F5EBD3" style="padding:26px;border:1px solid #CFC6AC;border-left:4px solid #B86914;border-radius:10px;">
+      {% if milestone_type == "unit_complete" %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">Unit {{ milestone_data.unit_number }} complete</div>
+      {% elif milestone_type == "cefr_level_up" %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">Now at {{ milestone_data.new_level }}</div>
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#3A322B;padding-top:8px;">A full proficiency level, cleared.</div>
+      {% else %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">Milestone reached</div>
+      {% endif %}
+    </td>
+  </tr>
+</table>
+
+{{ ui.divider() }}
+
+{{ ui.heading("Want to accelerate it?", 26) }}
+{{ ui.p("A gift of Tauka Tutor opens live cohort sessions with expert tutors and AI-guided conversation practice — the two things that move a learner fastest.") }}
+
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+  <tr>
+    <td style="padding-right:12px;">{{ ui.button(web_base_url ~ "/gift/checkout?supporter_id=" ~ supporter_id ~ "&duration=1", "Gift 1 month — $40", "amber") }}</td>
+  </tr>
+  <tr>
+    <td style="padding-top:10px;">{{ ui.button(web_base_url ~ "/gift/checkout?supporter_id=" ~ supporter_id ~ "&duration=3", "Gift 3 months — $120") }}</td>
+  </tr>
+</table>
+
+{% endblock %}
+
+{% block footer_note %}
+{% if supporter_id %}
+<br><a href="{{ api_base_url }}/supporters/opt-out/{{ supporter_id }}" style="color:rgba(245,235,211,0.5);text-decoration:underline;">Stop milestone updates</a>
+{% endif %}
 {% endblock %}

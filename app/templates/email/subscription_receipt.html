@@ -1,16 +1,56 @@
 {% extends "base.html" %}
-{% block title %}Your Tauka Subscription{% endblock %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "student" %}
+{% block title %}Your Tauka subscription{% endblock %}
+{% block preheader %}{% if message %}We could not process your latest Tauka payment.{% else %}Your Tauka {{ tier | capitalize }} subscription is active.{% endif %}{% endblock %}
 {% block content %}
+
 {% if message %}
-<h2>Action Required</h2>
-<p>{{ message }}</p>
-<p><a class="btn" href="{{ app_base_url | default('https://app.tauka.com') }}/billing">Update Payment Method</a></p>
+
+{{ ui.eyebrow("Action required") }}
+{{ ui.heading("We could not take your payment.") }}
+{{ ui.p(message) }}
+
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0;">
+  <tr>
+    <td bgcolor="#F5EBD3" style="padding:22px;border:1px solid #CFC6AC;border-left:4px solid #BA1A1A;border-radius:10px;font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#3A322B;">
+      Your access stays on for now. If the payment method is not updated, the account drops to the free tier at the end of the current period — your progress, streak and history are kept either way.
+    </td>
+  </tr>
+</table>
+
+<div style="margin:26px 0;">{{ ui.button(web_base_url ~ "/account/subscription", "Update payment method") }}</div>
+
+{{ ui.quiet_link(web_base_url ~ "/contact", "Something look wrong? Get in touch") }}
+
 {% else %}
-<h2>You're all set!</h2>
-<p>Your <strong>Tauka {{ tier | capitalize }}</strong> subscription is now active.</p>
-<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
-  <p><strong>Plan:</strong> Tauka {{ tier | capitalize }}</p>
-</div>
-<p><a class="btn" href="{{ app_base_url | default('https://app.tauka.com') }}">Start Learning</a></p>
+
+{{ ui.eyebrow("Subscription active") }}
+{{ ui.heading("You're all set.") }}
+{{ ui.p("Your Tauka " ~ (tier | capitalize) ~ " subscription is live. Everything on the plan is available now.") }}
+
+{% call ui.panel() %}
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+    <tr>
+      <td style="font-size:14px;color:#7B7464;">Plan</td>
+      <td align="right" style="font-size:14px;color:#1A1610;"><strong>Tauka {{ tier | capitalize }}</strong></td>
+    </tr>
+    {% if current_period_end %}
+    <tr>
+      <td style="padding-top:10px;font-size:14px;color:#7B7464;">Renews</td>
+      <td align="right" style="padding-top:10px;font-size:14px;color:#1A1610;"><strong>{{ current_period_end }}</strong></td>
+    </tr>
+    {% endif %}
+  </table>
+{% endcall %}
+
+<div style="margin:26px 0;">{{ ui.button(web_base_url ~ "/account", "Start learning") }}</div>
+
+{{ ui.divider() }}
+
+{{ ui.p("The programme is time-bound: one year to fluency, two to professional proficiency. The sequence matters more than the hours, so start at the beginning even if you tested higher.") }}
+<div style="margin-top:6px;">{{ ui.quiet_link(web_base_url ~ "/curriculum", "See the curriculum") }}</div>
+
 {% endif %}
+
 {% endblock %}

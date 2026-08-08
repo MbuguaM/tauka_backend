@@ -1,34 +1,125 @@
+{#
+  Tauka email scaffold. Child templates fill {% block content %} and should
+  build it from _macros.html rather than raw tags, so every message shares one
+  set of brand primitives.
+
+  Palette and type mirror tauka-react-web/src/index.css: warm ivory paper, ink
+  footer, ochre and rust accents, italic Cormorant headings over Plus Jakarta
+  Sans body. See _macros.html for the token list.
+
+  No masthead by design — the message opens on its own first line, not behind a
+  website-style header bar. The brand mark (logo, Tauka wordmark, ሰላም) belongs
+  in the FOOTER only; do not reintroduce it at the top.
+
+  Each child sets `footer_audience` to student | supporter | prospect, which
+  picks the footer's link set. Default is prospect, the safest: it links
+  nothing that requires an account. See ui.footer_nav.
+
+  Deliberately light-only. The site has a dark theme, but a second palette here
+  buys little — Gmail and Outlook.com auto-invert regardless of what we ask for,
+  and the warm ivory ground is the identity. The color-scheme meta below tells
+  Apple Mail not to invert it.
+#}
+{% import "_macros.html" as ui %}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="color-scheme" content="light">
+  <meta name="supported-color-schemes" content="light">
   <title>{% block title %}Tauka{% endblock %}</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: #f5f5f5; }
-    .wrapper { max-width: 600px; margin: 0 auto; background: #fff; }
-    .header { background: #1e3252; padding: 24px 32px; }
-    .header h1 { color: #64b4ff; margin: 0; font-size: 24px; }
-    .body { padding: 32px; color: #333; line-height: 1.6; }
-    .footer { background: #f5f5f5; padding: 16px 32px; font-size: 12px; color: #999; }
-    .btn { display: inline-block; background: #1e3252; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; }
-    .highlight { color: #1e3252; font-weight: bold; }
+    /* Progressive enhancement only. Everything structural is inlined below,
+       because Gmail drops this block when a message is forwarded to a
+       non-Gmail address. Nothing here may be load-bearing. */
+    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,500&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap');
+
+    body { margin:0 !important; padding:0 !important; width:100% !important; }
+    table { border-collapse:collapse; }
+    img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
+    a { color:#8E5008; }
+
+    .t-body a { word-break:break-word; }
+
+    @media only screen and (max-width:620px) {
+      .t-shell { width:100% !important; }
+      .t-pad { padding-left:24px !important; padding-right:24px !important; }
+      .t-h1 { font-size:30px !important; }
+      .t-stack { display:block !important; width:100% !important; }
+    }
   </style>
 </head>
-<body>
-  <div class="wrapper">
-    <div class="header">
-      <h1>Tauka</h1>
-    </div>
-    <div class="body">
-      {% block content %}{% endblock %}
-    </div>
-    <div class="footer">
-      <p>Tauka Language Learning &bull; <a href="{{ web_base_url | default('https://www.tauka.com') }}">www.tauka.com</a></p>
-      {% if supporter_id %}
-      <p><a href="{{ web_base_url | default('https://www.tauka.com') }}/supporters/unsubscribe/{{ supporter_id }}">Unsubscribe</a></p>
-      {% endif %}
-    </div>
+<body style="margin:0;padding:0;background-color:#ECE0BF;">
+
+  {# Inbox preview text. Matters more without a masthead: this is the only
+     thing between the subject line and the first body words. #}
+  <div style="display:none;font-size:1px;color:#ECE0BF;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+    {% block preheader %}Tauka — one language, taught seriously.{% endblock %}
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
   </div>
+
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:#ECE0BF;">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+
+        <table role="presentation" class="t-shell" border="0" cellpadding="0" cellspacing="0" width="600" style="width:600px;max-width:600px;background-color:#FFFBF0;border:1px solid #CFC6AC;border-radius:10px;overflow:hidden;">
+
+          {# Ochre edge. Not a masthead — a 3px brand rule so the card does not
+             open as an anonymous white box. #}
+          <tr><td bgcolor="#B86914" style="height:3px;line-height:3px;font-size:0;">&nbsp;</td></tr>
+
+          {# ── Message ──────────────────────────────────────────────── #}
+          <tr>
+            <td class="t-pad t-body" style="padding:40px 40px 36px;font-family:'Plus Jakarta Sans','Public Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#3A322B;">
+              {% block content %}{% endblock %}
+            </td>
+          </tr>
+
+          {# ── Footer ───────────────────────────────────────────────── #}
+          <tr>
+            <td bgcolor="#1A1610" class="t-pad" style="padding:30px 40px;">
+
+              {# The site's .footer-mark. With no masthead this is where the
+                 wordmark lives, so the message is still identifiably Tauka
+                 even with images blocked — the word is live text. #}
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="padding-bottom:22px;">
+                <tr>
+                  <td align="left" style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-weight:500;font-size:26px;line-height:1;letter-spacing:-0.01em;color:#F5EBD3;">
+                    <a href="{{ web_base_url }}" style="color:#F5EBD3;text-decoration:none;">
+                      <img src="{{ web_base_url }}/tauka_logo.png" width="30" height="30" alt="" style="vertical-align:middle;margin-right:10px;border:0;">Tauka</a>
+                  </td>
+                  <td align="right" style="font-family:'Noto Sans Ethiopic',serif;font-size:17px;color:#B86914;">&#4656;&#4619;&#4637;</td>
+                </tr>
+              </table>
+
+              {% block footer_nav %}{{ ui.footer_nav(footer_audience | default('prospect'), web_base_url) }}{% endblock %}
+
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid rgba(245,235,211,0.12);margin-top:12px;">
+                <tr>
+                  <td style="padding-top:18px;font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.7;color:rgba(245,235,211,0.5);">
+                    <a href="{{ web_base_url }}" style="color:rgba(245,235,211,0.72);text-decoration:none;">{{ web_base_url | replace('https://','') | replace('http://','') }}</a>
+                    &nbsp;&middot;&nbsp; One language, taught seriously.
+                    {% block footer_note %}{% endblock %}
+                    {# api_base_url, not web_base_url: this resolves to a FastAPI
+                       route on this service, not a page on the React site. #}
+                    {% if supporter_id %}
+                    <br><a href="{{ api_base_url }}/supporters/unsubscribe/{{ supporter_id }}" style="color:rgba(245,235,211,0.5);text-decoration:underline;">Unsubscribe from Tauka emails</a>
+                    {% endif %}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
 </body>
 </html>

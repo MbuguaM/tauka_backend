@@ -137,15 +137,17 @@ async def submit_testimonial(
         "display_preference": display_preference,
     }).eq("id", request_id).execute()
 
-    # Notify admin (best-effort)
+    # Notify admin (best-effort). Empty ADMIN_EMAIL disables it — checked here so
+    # opting out stays silent instead of logging a "no recipients" error per send.
     try:
-        from app.services.email_service import send_email
         from app.config import settings
-        await send_email(
-            to="hello@tauka.com",
-            subject="New testimonial submitted",
-            html_body=f"<p>Request ID: {request_id}</p><p>Quote: {quote_text}</p>",
-        )
+        if settings.admin_email:
+            from app.services.email_service import send_email
+            await send_email(
+                to=settings.admin_email,
+                subject="New testimonial submitted",
+                html_body=f"<p>Request ID: {request_id}</p><p>Quote: {quote_text}</p>",
+            )
     except Exception as exc:
         logger.warning("Admin testimonial notification failed: %s", exc)
 

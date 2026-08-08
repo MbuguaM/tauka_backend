@@ -1,28 +1,38 @@
 {% extends "base.html" %}
-{% block title %}See the Impact of Your Gift{% endblock %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "supporter" %}
+{% block title %}What your gift did{% endblock %}
+{% block preheader %}{{ lessons_completed }} lessons, {{ sessions_attended }} live sessions — here's what your gift bought.{% endblock %}
 {% block content %}
-<h2>Hi {{ supporter_name }},</h2>
-<p>Your {{ duration_description }} gift to your student has made a real difference. Here's what they accomplished:</p>
-<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
-      <div style="font-size: 32px; font-weight: bold; color: #1e3252;">{{ lessons_completed }}</div>
-      <div>lessons completed</div>
-    </div>
-    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
-      <div style="font-size: 32px; font-weight: bold; color: #1e3252;">{{ sessions_attended }}</div>
-      <div>live sessions</div>
-    </div>
-    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
-      <div style="font-size: 32px; font-weight: bold; color: #1e3252;">{{ best_streak }}</div>
-      <div>day streak</div>
-    </div>
-    <div style="text-align: center; padding: 16px; background: #fff; border-radius: 6px;">
-      <div style="font-size: 24px; font-weight: bold; color: #2ecc71;">{{ level_progress }}</div>
-      <div>level progress</div>
-    </div>
-  </div>
-</div>
-<p>Want to keep their momentum going? Gift another month of access.</p>
-<p><a class="btn" href="{{ web_base_url | default('https://www.tauka.com') }}/gifts?supporter_id={{ supporter_id }}">Renew Their Gift</a></p>
+
+{{ ui.eyebrow("Impact summary") }}
+{{ ui.heading("Hi " ~ supporter_name ~ ",") }}
+{{ ui.p("Your " ~ duration_description ~ " gift has run its course. Here is what your student did with it.") }}
+
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0;background-color:#F5EBD3;border:1px solid #CFC6AC;border-radius:10px;">
+  <tr>
+    {{ ui.stat(lessons_completed, "lessons completed") }}
+    {{ ui.stat(sessions_attended, "live sessions") }}
+  </tr>
+  <tr>
+    {{ ui.stat(best_streak, "day streak", "#EF6C00") }}
+    {{ ui.stat(level_progress, "level progress", "#4F6B3D") }}
+  </tr>
+</table>
+
+{{ ui.p("None of that happens without someone deciding it was worth paying for.") }}
+
+{{ ui.divider() }}
+
+{{ ui.heading("Keep the momentum?", 26) }}
+{{ ui.p("Language progress decays fast when it stops. Another month keeps their cohort sessions and conversation practice running without a break.") }}
+
+<div style="margin:24px 0;">{{ ui.button(web_base_url ~ "/gift/checkout?supporter_id=" ~ supporter_id, "Renew their gift", "amber") }}</div>
+
+{% endblock %}
+
+{% block footer_note %}
+{% if supporter_id %}
+<br><a href="{{ api_base_url }}/supporters/opt-out/{{ supporter_id }}" style="color:rgba(245,235,211,0.5);text-decoration:underline;">Stop supporter updates</a>
+{% endif %}
 {% endblock %}

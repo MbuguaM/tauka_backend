@@ -567,7 +567,8 @@ async def submit_final(session_id: str, answers: dict, background_tasks=None) ->
         referrer_id = session.get("referrer_student_id")
         if referrer_id:
             background_tasks.add_task(
-                _notify_referrer, referrer_id, session.get("name", ""), cefr_result
+                _notify_referrer, referrer_id, session.get("name", ""), cefr_result,
+                (session.get("language") or "").capitalize(),
             )
 
     return {
@@ -668,16 +669,35 @@ def _generate_description(cefr: str, language: str, breakdown: dict) -> str:
             f"{_SKILL_LABELS.get(bottom, bottom)} ({bottom_data.get('pct', 0)}%).")
 
 
-async def _notify_referrer(referrer_id: str, tester_name: str, cefr_result: str) -> None:
+async def _notify_referrer(
+    referrer_id: str, tester_name: str, cefr_result: str, language: str = "",
+) -> None:
+    """Tell an existing student that someone they referred finished the test.
+
+    referrer_student_id is an auth user, so the audience is always `student` —
+    the footer may safely carry account links.
+    """
     try:
         user_result = db.auth.admin.get_user_by_id(referrer_id)
         email = user_result.user.email if user_result and user_result.user else None
         if email:
-            from app.services.email_service import send_email
-            await send_email(
+            from app.services.email_service import send_template_email
+            name = tester_name or "Someone you referred"
+            await send_template_email(
                 to=email,
-                subject=f"{tester_name} just took the {cefr_result} language test",
-                html_body=f"<p>Someone you referred just completed the language proficiency test and scored <strong>{cefr_result}</strong>.</p>",
+                template_name="referral_completed",
+                template_data={
+                    "subject": f"{name} completed the {language or 'language'} assessment".replace("  ", " "),
+                    "sender_name": "",
+                    "recipient_name": name,
+                    "language": language,
+                    "cefr": cefr_result,
+                    # No referral row here, so no intent — "peer" is the neutral
+                    # reading: someone took it, here is how they did.
+                    "intent": "peer",
+                    "audience": "student",
+                },
+                tags=["referral_completed"],
             )
     except Exception as exc:
         logger.warning("Failed to notify referrer %s: %s", referrer_id, exc)

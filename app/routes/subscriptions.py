@@ -28,8 +28,11 @@ async def create_checkout(
         result = await create_subscription_checkout(
             student_id=user_id,
             tier=req.tier,
-            success_url=req.success_url or f"{settings.app_base_url}/subscription/success",
-            cancel_url=req.cancel_url or f"{settings.app_base_url}/subscription/cancel",
+            # Stripe redirects a browser here, so it must be a web route.
+            # /account/subscription renders current state and so reads correctly
+            # after either outcome; /subscription/success has never existed.
+            success_url=req.success_url or f"{settings.web_base_url}/account/subscription",
+            cancel_url=req.cancel_url or f"{settings.web_base_url}/account/subscription",
             customer_email=email,
         )
     except Exception as exc:

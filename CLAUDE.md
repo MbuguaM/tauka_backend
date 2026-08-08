@@ -92,14 +92,24 @@ Required variables in `.env`:
 | `STRIPE_PRICE_GIFT_3MO` | For gifts | Stripe Price ID for 3-month gift ($120) |
 | `EMAIL_PROVIDER` | No | `"console"`, `"smtp"` or `"resend"` (default: `"resend"`). NOT `"sendgrid"` — see below |
 | `EMAIL_API_KEY` | For `resend` | Resend API key |
-| `EMAIL_FROM_ADDRESS` | No | Sender address (default: `Tauka <hello@tauka.com>`) |
+| `EMAIL_FROM_ADDRESS` | No | Sender address (default: `Tauka <support@tauka.io>`). For `smtp` it must be `SMTP_USER` or a verified alias |
 | `EMAIL_OUTBOX_DIR` | No | Where `console` writes rendered mail (default: `.outbox`) |
+| `ADMIN_EMAIL` | No | Internal recipient for ops notifications (default: `support@tauka.io`). Empty disables them |
 | `SMTP_HOST` / `SMTP_PORT` | For `smtp` | Defaults `localhost:1025` (Mailpit) |
 | `SMTP_USER` / `SMTP_PASSWORD` | For `smtp` | Leave empty for Mailpit |
-| `SMTP_STARTTLS` | No | Default `false` |
+| `SMTP_STARTTLS` | No | Default `false`. Set `true` for port 587 |
+| `SMTP_SSL` | No | Default `false`. Set `true` for port 465 (implicit TLS) |
 | `CORS_ORIGINS` | No | Comma-separated browser origins allowed to call this API |
-| `WEB_BASE_URL` | No | Marketing site URL (default: `https://www.tauka.com`) |
-| `APP_BASE_URL` | No | App URL (default: `https://app.tauka.com`) |
+| `WEB_BASE_URL` | No | Marketing site URL (default: `https://tauka.io`). Injected into every email template |
+| `API_BASE_URL` | No | This service's public origin (default: `https://backend.tauka.io`). Email unsubscribe/opt-out links resolve to FastAPI routes here, not to the site |
+
+There is **no `APP_BASE_URL`** — removed 2026-08-08. Every destination this service
+emits is a browser URL: Stripe `success_url` / `cancel_url` / `return_url`, and the
+CTAs in email. Account and subscription management live on tauka-react-web by
+design; the Flutter app is usage-only and cannot be a redirect target. The setting
+defaulted to `https://app.tauka.com`, a host that exists nowhere in the system —
+the app's real deep-link host is `app.tauka.app` (`tauka://` universal links),
+which Stripe cannot redirect a browser to regardless. Use `WEB_BASE_URL`.
 
 ### Email providers
 
@@ -111,6 +121,25 @@ Required variables in `.env`:
 - **`smtp`** — any SMTP host. Defaults target a local catcher:
   `docker run -p 1025:1025 -p 8025:8025 axllent/mailpit`, inbox at
   `http://localhost:8025`.
+
+  Against a real host, the TLS flag must match the port — they are two different
+  protocols, not two settings for the same one:
+
+  | Port | Set | Mechanism |
+  |---|---|---|
+  | 587 | `SMTP_STARTTLS=true`, `SMTP_SSL=false` | Connect in cleartext, upgrade via `STARTTLS` |
+  | 465 | `SMTP_SSL=true` | TLS handshake on the first byte (implicit TLS / SMTPS) |
+  | 1025 | both `false` | Mailpit, no TLS |
+
+  `SMTP_SSL` wins if both are set — `STARTTLS` is not offered on an
+  already-encrypted connection, so it is skipped rather than attempted.
+  Getting this wrong does not refuse the connection, it **hangs until the 15s
+  timeout on every send**, so `_provider()` logs an error when
+  `SMTP_PORT=465` is paired with `SMTP_SSL=false`.
+
+  The host authenticates `SMTP_USER`, but recipients see `EMAIL_FROM_ADDRESS`.
+  Most providers (Zoho, Google Workspace, Fastmail) reject a `From` that is not
+  the authenticated mailbox or a verified alias of it — keep the two consistent.
 - **`resend`** — production. Needs `EMAIL_API_KEY` and a domain verified in Resend.
 
 `"sendgrid"` appears in older docs but **has never been implemented**. An

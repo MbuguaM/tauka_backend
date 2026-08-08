@@ -1,15 +1,42 @@
 {% extends "base.html" %}
-{% block title %}Your Tauka Access Expires Soon{% endblock %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "student" %}
+{% block title %}Your Tauka access expires soon{% endblock %}
+{% block preheader %}{% if message %}{{ message }}{% else %}Your gifted Tauka Tutor access ends on {{ expires_at }}.{% endif %}{% endblock %}
 {% block content %}
-<h2>Your gifted access expires soon</h2>
+
 {% if message %}
-<p>{{ message }}</p>
+
+{{ ui.eyebrow("Your access") }}
+{{ ui.heading("Your gifted access has ended.") }}
+{{ ui.p(message) }}
+<div style="margin:26px 0;">{{ ui.button(web_base_url ~ "/account/subscription", "Continue with Tauka") }}</div>
+
 {% else %}
-<p>Your Tauka Tutor access expires on <strong>{{ expires_at }}</strong> — that's {{ days_left }} day{% if days_left != 1 %}s{% endif %} away.</p>
-<p>Don't lose your streak! Subscribe to keep learning after your gift ends.</p>
-<div style="margin: 24px 0;">
-  <p><a class="btn" href="{{ app_base_url | default('https://app.tauka.com') }}/subscription">Continue with Tauka</a></p>
-</div>
-<p style="font-size: 14px; color: #666;">Or continue with a free account and learn at your own pace.</p>
+
+{{ ui.eyebrow("Ending soon") }}
+{{ ui.heading("Your gifted access expires soon.") }}
+
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0;">
+  <tr>
+    <td bgcolor="#F5EBD3" style="padding:24px;border:1px solid #CFC6AC;border-left:4px solid #EF6C00;border-radius:10px;">
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">
+        {{ days_left }} day{% if days_left != 1 %}s{% endif %} left
+      </div>
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#3A322B;padding-top:8px;">
+        Tauka Tutor access ends on {{ expires_at }}.
+      </div>
+    </td>
+  </tr>
+</table>
+
+{{ ui.p("Progress in a language is mostly a function of not stopping. Keeping your cohort sessions and conversation practice going is the difference between a year of study and a year of restarting.") }}
+
+<div style="margin:26px 0;">{{ ui.button(web_base_url ~ "/account/subscription", "Keep my access") }}</div>
+
+{{ ui.p("You can also carry on with a free account and work at your own pace — your progress and streak stay where they are.") }}
+<div style="margin-top:6px;">{{ ui.quiet_link(web_base_url ~ "/pricing", "Compare the plans") }}</div>
+
 {% endif %}
+
 {% endblock %}

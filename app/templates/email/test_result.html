@@ -1,16 +1,49 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "prospect" %}
 {% block title %}Your Tauka Test Result{% endblock %}
+{% block preheader %}You scored {{ cefr_result }} on the Tauka proficiency assessment.{% endblock %}
 {% block content %}
-<h2>Hi {{ name or "there" }},</h2>
-<p>You've completed the Tauka language proficiency test. Here are your results:</p>
-<h1 class="highlight">{{ cefr_result }}</h1>
-<p>{{ description }}</p>
-<h3>Breakdown by skill:</h3>
-<ul>
+
+{{ ui.eyebrow("Assessment complete") }}
+{{ ui.heading("Hi " ~ (name or "there") ~ ",") }}
+{{ ui.p("You've finished the Tauka proficiency assessment. Here is where you stand.") }}
+
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:26px 0;">
+  <tr>
+    <td align="center" bgcolor="#1A1610" style="padding:32px 24px;border-radius:10px;">
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:rgba(245,235,211,0.6);">Your level</div>
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-weight:500;font-size:72px;line-height:1.1;color:#B86914;">{{ cefr_result }}</div>
+      {% if description %}
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:rgba(245,235,211,0.78);max-width:380px;margin:0 auto;">{{ description }}</div>
+      {% endif %}
+    </td>
+  </tr>
+</table>
+
+{% if breakdown %}
+<p style="margin:0 0 12px;font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:20px;color:#1A1610;">Breakdown by skill</p>
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:8px;">
   {% for skill, data in breakdown.items() %}
-  <li><strong>{{ skill | capitalize }}:</strong> {{ data.correct }}/{{ data.total }} ({{ data.pct }}%)</li>
+  <tr>
+    <td style="padding:11px 0;border-bottom:1px solid #E4D9BE;font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:14px;color:#3A322B;">
+      <span style="color:#B86914;">&#9671;</span>&nbsp; {{ skill | capitalize }}
+    </td>
+    <td align="right" style="padding:11px 0;border-bottom:1px solid #E4D9BE;font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:14px;color:#7B7464;">
+      {{ data.correct }}/{{ data.total }}
+      <strong style="color:#1A1610;">&nbsp;{{ data.pct }}%</strong>
+    </td>
+  </tr>
   {% endfor %}
-</ul>
-<p><a class="btn" href="{{ share_url }}">View &amp; Share Your Result</a></p>
-<p>Ready to start learning? Join Tauka and get personalised lessons.</p>
+</table>
+{% endif %}
+
+<div style="margin:28px 0 8px;">{{ ui.button(share_url or web_base_url, "View and share your result") }}</div>
+
+{{ ui.divider() }}
+
+{{ ui.heading("Ready to go further?", 24) }}
+{{ ui.p("Tauka is a time-bound programme — one year to fluency, two to professional proficiency, built on the FSI tradition. Your assessment result sets your starting point.") }}
+<div style="margin-top:18px;">{{ ui.button(web_base_url ~ "/pricing", "See plans", "amber") }}</div>
+
 {% endblock %}

@@ -35,8 +35,9 @@ async def create_subscription_checkout(
             mode="subscription",
             line_items=[{"price": price_id, "quantity": 1}],
             customer_email=customer_email,
-            success_url=success_url or f"{settings.app_base_url}/subscription/success",
-            cancel_url=cancel_url or f"{settings.app_base_url}/subscription/cancel",
+            # Browser redirect targets — web routes only. See config.web_base_url.
+            success_url=success_url or f"{settings.web_base_url}/account/subscription",
+            cancel_url=cancel_url or f"{settings.web_base_url}/account/subscription",
             metadata={"student_id": student_id, "tier": tier},
         )
     )

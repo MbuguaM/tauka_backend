@@ -7,6 +7,8 @@ Three providers, selected by EMAIL_PROVIDER:
   smtp     — any SMTP host. Points at a local catcher (Mailpit/MailHog on
              localhost:1025) by default, so local runs can exercise the real
              render-and-send path without an account or a verified domain.
+             Real hosts pick a TLS mode by port: 587 + SMTP_STARTTLS, or
+             465 + SMTP_SSL. See _send_smtp.
   console  — no network at all. Renders the message to EMAIL_OUTBOX_DIR as a
              timestamped .html and logs a one-line summary.
 
@@ -32,6 +34,16 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "email"
 _jinja_env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=True)
 
+# Every template needs these for its links and footer, but callers pass template
+# data ad hoc and several were omitting them — an undefined name renders as ""
+# in Jinja, so the result was a live <a href=""> pointing at nothing rather than
+# an error. As globals they are always present; anything in template_data still
+# takes precedence, since render() context beats env globals.
+_jinja_env.globals.update(
+    web_base_url=settings.web_base_url,
+    api_base_url=settings.api_base_url,
+)
+
 _BACKEND_ROOT = Path(__file__).parent.parent.parent
 
 _VALID_PROVIDERS = ("resend", "smtp", "console")
@@ -50,6 +62,14 @@ def _provider() -> str:
         logger.error(
             "EMAIL_PROVIDER=resend but EMAIL_API_KEY is empty — no mail can be "
             "sent. Set EMAIL_API_KEY, or use EMAIL_PROVIDER=console for local work."
+        )
+    if p == "smtp" and settings.smtp_port == 465 and not settings.smtp_ssl:
+        # Caught here because the failure mode is otherwise a silent 15s stall
+        # per send rather than a refused connection.
+        logger.error(
+            "SMTP_PORT=465 is implicit TLS but SMTP_SSL is false — every send "
+            "will hang until the timeout. Set SMTP_SSL=true, or use port 587 "
+            "with SMTP_STARTTLS=true."
         )
     return p
 
@@ -105,8 +125,15 @@ def _send_smtp(recipients: list[str], subject: str, html_body: str,
     msg.set_content(text_body or "This message requires an HTML-capable client.")
     msg.add_alternative(html_body, subtype="html")
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
-        if settings.smtp_starttls:
+    # The two TLS modes are not interchangeable. Implicit TLS (port 465) expects
+    # a handshake on the first byte, so plain SMTP sends a cleartext EHLO into a
+    # TLS listener and blocks until the timeout; STARTTLS (port 587) is the
+    # opposite — connect in the clear, then upgrade. SMTP_SSL picks the former,
+    # in which case STARTTLS is not offered and must not be attempted.
+    smtp_class = smtplib.SMTP_SSL if settings.smtp_ssl else smtplib.SMTP
+
+    with smtp_class(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+        if settings.smtp_starttls and not settings.smtp_ssl:
             smtp.starttls()
         if settings.smtp_user:
             smtp.login(settings.smtp_user, settings.smtp_password)

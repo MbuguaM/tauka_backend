@@ -138,8 +138,10 @@ async def change_subscription(user_id: str, new_tier: str, success_url: str | No
         result = await create_subscription_checkout(
             student_id=user_id,
             tier=new_tier,
-            success_url=success_url or f"{settings.app_base_url}/account/subscription/success",
-            cancel_url=cancel_url or f"{settings.app_base_url}/account/subscription",
+            # /account/subscription/success is not a route either — the portal
+            # has only /account/subscription, which shows post-webhook state.
+            success_url=success_url or f"{settings.web_base_url}/account/subscription",
+            cancel_url=cancel_url or f"{settings.web_base_url}/account/subscription",
             customer_email=email,
         )
         return {"action": "checkout", "checkout_url": result["checkout_url"]}
@@ -286,7 +288,7 @@ async def create_billing_portal_session(user_id: str) -> str:
     session = await asyncio.to_thread(
         lambda: stripe.billing_portal.Session.create(
             customer=customer_id,
-            return_url=f"{settings.app_base_url}/account/subscription",
+            return_url=f"{settings.web_base_url}/account/subscription",
         )
     )
     return session.url

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Two axes, four messages:
+
+      intent   validate — the reader asked a speaker they trust to vet Tauka
+               peer     — the reader passed the test to someone as a challenge
+      audience prospect — a visitor with no account; the ask is to sign up
+               student  — an existing learner; the ask is to check supporters
+
+    A prospect must never be linked to /account, hence the footer switch. #}
+{% set is_student = audience == "student" %}
+{% set footer_audience = "student" if is_student else "prospect" %}
+{% block title %}{{ recipient_name }} completed the {{ language }} assessment{% endblock %}
+{% block preheader %}{{ recipient_name }} scored {{ cefr }} on the {{ language }} assessment.{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Assessment complete") }}
+{% if is_student %}
+{{ ui.heading(recipient_name ~ " took the assessment.") }}
+{% else %}
+{{ ui.heading("Hi " ~ sender_name ~ ",") }}
+{% endif %}
+
+{% if intent == "validate" %}
+{{ ui.p(recipient_name ~ " has finished the " ~ language ~ " assessment you sent them.") }}
+{% else %}
+{{ ui.p(recipient_name ~ " took the " ~ language ~ " assessment too.") }}
+{% endif %}
+
+{% if cefr %}
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0;">
+  <tr>
+    <td align="center" bgcolor="#1A1610" style="padding:26px 24px;border-radius:10px;">
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:rgba(245,235,211,0.6);">{{ recipient_name }} scored</div>
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-weight:500;font-size:58px;line-height:1.15;color:#B86914;">{{ cefr }}</div>
+    </td>
+  </tr>
+</table>
+{% endif %}
+
+{% if is_student %}
+
+  {% if intent == "validate" %}
+  {{ ui.p("If they approved Tauka, they will show up on your supporters page — and they can gift you access from there.") }}
+  {% endif %}
+  <div style="margin:26px 0;">{{ ui.button(web_base_url ~ "/account/supporters", "See your supporters") }}</div>
+
+{% else %}
+
+  {% if intent == "validate" %}
+  {{ ui.p("You asked someone who speaks the language to judge whether this is worth your time. That is the right way round — most people commit first and find out later.") }}
+  <div style="margin:26px 0;">{{ ui.button(signup_link, "Start learning " ~ language) }}</div>
+  {{ ui.quiet_link(web_base_url ~ "/curriculum", "See what the first year covers") }}
+  {% else %}
+  {{ ui.p("See how you compare — the assessment takes about ten minutes and needs no account.") }}
+  <div style="margin:26px 0;">{{ ui.button(test_link, "Take the " ~ language ~ " assessment") }}</div>
+  {% endif %}
+
+{% endif %}
+
+{% endblock %}

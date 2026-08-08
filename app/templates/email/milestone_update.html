@@ -1,30 +1,49 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "supporter" %}
 {% block title %}Milestone Update{% endblock %}
+{% block preheader %}Your student just reached a new milestone on Tauka.{% endblock %}
 {% block content %}
-<h2>Hi {{ supporter_name }},</h2>
-<p>Your student just hit a new milestone on Tauka!</p>
-<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
-  {% if milestone_type == "unit_complete" %}
-  <h3>🎓 Unit Completed</h3>
-  <p>They just finished Unit {{ milestone_data.unit_number }} — {{ milestone_data.lessons_completed }} lessons in total!</p>
-  {% elif milestone_type == "streak_14" %}
-  <h3>🔥 14-Day Streak!</h3>
-  <p>They've practiced {{ milestone_data.streak_days }} days in a row. That's dedication!</p>
-  {% elif milestone_type == "first_ai_convo" %}
-  <h3>💬 First AI Conversation</h3>
-  <p>They just had their first AI-powered language conversation!</p>
-  {% elif milestone_type == "first_cohort_session" %}
-  <h3>👥 First Group Session</h3>
-  <p>They attended their first live cohort session!</p>
-  {% elif milestone_type == "cefr_level_up" %}
-  <h3>📈 Level Up!</h3>
-  <p>They progressed from {{ milestone_data.previous_level }} to <strong>{{ milestone_data.new_level }}</strong>!</p>
-  {% else %}
-  <h3>Milestone Achieved</h3>
-  {% endif %}
-</div>
-<p><a class="btn" href="{{ web_base_url }}">See Their Progress</a></p>
-<p style="font-size: 12px; color: #999;">
-  <a href="{{ web_base_url }}/supporters/opt-out/{{ supporter_id }}">Stop receiving updates</a>
-</p>
+
+{{ ui.eyebrow("Progress report") }}
+{{ ui.heading("Hi " ~ supporter_name ~ ",") }}
+{{ ui.p("Your student just reached a new milestone.") }}
+
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0;">
+  <tr>
+    <td bgcolor="#F5EBD3" style="padding:26px;border:1px solid #CFC6AC;border-left:4px solid #B86914;border-radius:10px;">
+      {% if milestone_type == "unit_complete" %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">Unit {{ milestone_data.unit_number }} complete</div>
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#3A322B;padding-top:8px;">{{ milestone_data.lessons_completed }} lessons finished so far.</div>
+      {% elif milestone_type == "streak_14" %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">{{ milestone_data.streak_days }} days unbroken</div>
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#3A322B;padding-top:8px;">They have practised every day for {{ milestone_data.streak_days }} days running.</div>
+      {% elif milestone_type == "first_ai_convo" %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">First conversation</div>
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#3A322B;padding-top:8px;">They held their first AI-guided conversation in the language.</div>
+      {% elif milestone_type == "first_cohort_session" %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">First live session</div>
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#3A322B;padding-top:8px;">They attended their first cohort session with a tutor.</div>
+      {% elif milestone_type == "cefr_level_up" %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">{{ milestone_data.previous_level }} &rarr; {{ milestone_data.new_level }}</div>
+      <div style="font-family:'Plus Jakarta Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#3A322B;padding-top:8px;">A full proficiency level, cleared.</div>
+      {% else %}
+      <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:26px;line-height:1.15;color:#1A1610;">Milestone reached</div>
+      {% endif %}
+    </td>
+  </tr>
+</table>
+
+{# No CTA to a progress page: there is no supporter-facing portal, and
+   /account/supporters is the STUDENT's page behind ProtectedRoute. This email
+   is itself the progress report, so the link that helps is context. #}
+{{ ui.p("This is one step in a fixed sequence — the programme runs a year to fluency, two to professional proficiency.") }}
+<div style="margin-top:6px;">{{ ui.quiet_link(web_base_url ~ "/curriculum", "See where this sits in the programme") }}</div>
+
+{% endblock %}
+
+{% block footer_note %}
+{% if supporter_id %}
+<br><a href="{{ api_base_url }}/supporters/opt-out/{{ supporter_id }}" style="color:rgba(245,235,211,0.5);text-decoration:underline;">Stop milestone updates</a>
+{% endif %}
 {% endblock %}

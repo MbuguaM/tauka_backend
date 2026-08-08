@@ -165,7 +165,7 @@ async def connect_test_session(referral_code: str, test_session_id: str) -> None
 
 async def handle_test_completion(referral_code: str) -> None:
     """Notify sender when their referred contact completes the test."""
-    from app.services.email_service import send_email
+    from app.services.email_service import send_template_email
 
     try:
         result = db.schema("app").table("test_referrals").select("*").eq(
@@ -202,27 +202,26 @@ async def handle_test_completion(referral_code: str) -> None:
         signup_link = f"{settings.web_base_url}/signup?ref={referral_code}"
         test_link = _build_share_url(language.lower(), referral_code, intent)
 
+        # Both branches render the same template; `audience` picks the CTA and
+        # the footer link set, so a visitor is never sent to an /account page
+        # they have no login for.
+        completion_data = {
+            "sender_name": sender_name,
+            "recipient_name": recipient_name,
+            "language": language,
+            "cefr": cefr,
+            "intent": intent,
+            "signup_link": signup_link,
+            "test_link": test_link,
+            "subject": f"{recipient_name} completed the {language} assessment",
+        }
+
         if sender_type == "visitor" and sender_email:
-            if intent == "validate":
-                body = (
-                    f"<p>Hi {sender_name},</p>"
-                    f"<p><strong>{recipient_name}</strong> completed the {language} assessment. "
-                    f"They scored <strong>{cefr}</strong>.</p>"
-                    f"<p>Ready to start learning yourself? "
-                    f"<a href='{signup_link}'>Sign up for Tauka</a></p>"
-                )
-            else:
-                body = (
-                    f"<p>Hi {sender_name},</p>"
-                    f"<p><strong>{recipient_name}</strong> took the {language} test too! "
-                    f"They scored <strong>{cefr}</strong>.</p>"
-                    f"<p>See how you compare — "
-                    f"<a href='{test_link}'>take the test yourself</a>.</p>"
-                )
-            await send_email(
+            await send_template_email(
                 to=sender_email,
-                subject=f"{recipient_name} completed the {language} assessment",
-                html_body=body,
+                template_name="referral_completed",
+                template_data={**completion_data, "audience": "prospect"},
+                tags=["referral_completed"],
             )
 
         elif sender_type == "student" and referral.get("sender_student_id"):
@@ -231,21 +230,11 @@ async def handle_test_completion(referral_code: str) -> None:
                 user_result = db.auth.admin.get_user_by_id(student_id)
                 email = user_result.user.email if user_result and user_result.user else None
                 if email:
-                    if intent == "validate":
-                        body = (
-                            f"<p><strong>{recipient_name}</strong> took the assessment "
-                            f"and scored <strong>{cefr}</strong>. "
-                            f"Check your Supporters page to see if they approved Tauka.</p>"
-                        )
-                    else:
-                        body = (
-                            f"<p><strong>{recipient_name}</strong> took the {language} test! "
-                            f"They scored <strong>{cefr}</strong>.</p>"
-                        )
-                    await send_email(
+                    await send_template_email(
                         to=email,
-                        subject=f"{recipient_name} completed the {language} test",
-                        html_body=body,
+                        template_name="referral_completed",
+                        template_data={**completion_data, "audience": "student"},
+                        tags=["referral_completed"],
                     )
             except Exception as exc:
                 logger.warning("Student notification failed: %s", exc)
@@ -256,7 +245,7 @@ async def handle_test_completion(referral_code: str) -> None:
 
 async def handle_approval(referral_code: str) -> None:
     """Notify sender when a validate-intent referral approves the platform."""
-    from app.services.email_service import send_email
+    from app.services.email_service import send_template_email
 
     try:
         result = db.schema("app").table("test_referrals").select("*").eq(
@@ -295,18 +284,23 @@ async def handle_approval(referral_code: str) -> None:
 
         signup_link = f"{settings.web_base_url}/signup?ref={referral_code}"
 
+        approval_data = {
+            "sender_name": sender_name,
+            "supporter_name": supporter_name,
+            "language": language,
+            "signup_link": signup_link,
+        }
+
         if sender_type == "visitor" and sender_email:
-            body = (
-                f"<p>Hi {sender_name},</p>"
-                f"<p><strong>{supporter_name}</strong> tried the Tauka assessment "
-                f"and recommends it for your {language} learning.</p>"
-                f"<p>Ready to start? <a href='{signup_link}'>Sign up for Tauka</a></p>"
-            )
-            await send_email(
+            await send_template_email(
                 to=sender_email,
-                subject=f"{supporter_name} recommends Tauka for your {language} learning",
-                html_body=body,
-                reply_to=None,
+                template_name="supporter_approved",
+                template_data={
+                    **approval_data,
+                    "audience": "prospect",
+                    "subject": f"{supporter_name} recommends Tauka for your {language} learning",
+                },
+                tags=["supporter_approved"],
             )
 
         elif sender_type == "student" and referral.get("sender_student_id"):
@@ -315,14 +309,15 @@ async def handle_approval(referral_code: str) -> None:
                 user_result = db.auth.admin.get_user_by_id(student_id)
                 email = user_result.user.email if user_result and user_result.user else None
                 if email:
-                    body = (
-                        f"<p><strong>{supporter_name}</strong> approved Tauka for you! "
-                        f"They'll appear in your Supporters list.</p>"
-                    )
-                    await send_email(
+                    await send_template_email(
                         to=email,
-                        subject=f"{supporter_name} approved Tauka for you",
-                        html_body=body,
+                        template_name="supporter_approved",
+                        template_data={
+                            **approval_data,
+                            "audience": "student",
+                            "subject": f"{supporter_name} approved Tauka for you",
+                        },
+                        tags=["supporter_approved"],
                     )
             except Exception as exc:
                 logger.warning("Student approval notification failed: %s", exc)

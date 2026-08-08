@@ -1,17 +1,29 @@
 {% extends "base.html" %}
-{% block title %}You've Received a Tauka Gift!{% endblock %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "student" %}
+{% block title %}You've received a Tauka gift{% endblock %}
+{% block preheader %}{{ gifted_by }} gifted you Tauka Tutor access — here's how to start.{% endblock %}
 {% block content %}
-<h2>You have a gift!</h2>
-<p><strong>{{ gifted_by }}</strong> has gifted you <strong>{{ duration_months | default(1) }} month{% if duration_months | default(1) > 1 %}s{% endif %}</strong> of Tauka Tutor access.</p>
-<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
-  <p><strong>Your access includes:</strong></p>
-  <ul>
-    <li>Live cohort sessions with expert tutors</li>
-    <li>AI-powered conversation practice</li>
-    <li>Personalized lesson recommendations</li>
-    <li>Progress tracking and milestone celebrations</li>
-  </ul>
-  <p><strong>Access expires:</strong> {{ expires_at }}</p>
-</div>
-<p><a class="btn" href="{{ app_base_url | default('https://app.tauka.com') }}">Start Learning Now</a></p>
+
+{{ ui.eyebrow("A gift for you") }}
+{{ ui.heading("You have Tauka Tutor access.") }}
+
+{{ ui.p(gifted_by ~ " has gifted you " ~ (duration_months | default(1)) ~ (" months" if (duration_months | default(1)) > 1 else " month") ~ " of Tauka Tutor.") }}
+
+{% call ui.panel() %}
+  <div style="font-family:'Cormorant Garamond','EB Garamond',Georgia,serif;font-style:italic;font-size:20px;color:#1A1610;padding-bottom:12px;">What that opens</div>
+  <div style="padding-bottom:7px;"><span style="color:#B86914;">&#9671;</span>&nbsp; Live cohort sessions with expert tutors</div>
+  <div style="padding-bottom:7px;"><span style="color:#B86914;">&#9671;</span>&nbsp; AI-guided conversation practice</div>
+  <div style="padding-bottom:7px;"><span style="color:#B86914;">&#9671;</span>&nbsp; Lesson recommendations matched to your level</div>
+  <div style="padding-bottom:14px;"><span style="color:#B86914;">&#9671;</span>&nbsp; Progress tracking across the full programme</div>
+  <div style="border-top:1px solid #CFC6AC;padding-top:14px;font-size:14px;color:#7B7464;">Access runs until <strong style="color:#1A1610;">{{ expires_at }}</strong></div>
+{% endcall %}
+
+<div style="margin:26px 0;">{{ ui.button(web_base_url ~ "/account", "Start learning") }}</div>
+
+{{ ui.divider() }}
+
+{{ ui.p("Tauka is time-bound by design — one year to fluency, two to professional proficiency, on the FSI model.") }}
+<div style="margin-top:6px;">{{ ui.quiet_link(web_base_url ~ "/curriculum", "See how the programme is structured") }}</div>
+
 {% endblock %}

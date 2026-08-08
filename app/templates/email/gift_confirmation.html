@@ -1,15 +1,38 @@
 {% extends "base.html" %}
-{% block title %}Your Tauka Gift is Confirmed{% endblock %}
+{% import "_macros.html" as ui %}
+{% set footer_audience = "supporter" %}
+{% block title %}Your Tauka gift is confirmed{% endblock %}
+{% block preheader %}Your gift is processed and your student's account is upgraded.{% endblock %}
 {% block content %}
-<h2>Thank you, {{ supporter_name }}!</h2>
-<p>Your gift has been successfully processed. Here are the details:</p>
-<div style="background: #f0f7ff; border-radius: 8px; padding: 20px; margin: 20px 0;">
-  <p><strong>Duration:</strong> {{ duration_months }} month{% if duration_months > 1 %}s{% endif %} of Tauka Tutor</p>
-  <p><strong>Access expires:</strong> {{ expires_at }}</p>
-  {% if receipt_url %}
-  <p><a href="{{ receipt_url }}">View your receipt</a></p>
-  {% endif %}
-</div>
-<p>Your student has been notified and their account has been upgraded. We'll keep you updated on their progress.</p>
-<p>Thank you for investing in their language learning journey!</p>
+
+{{ ui.eyebrow("Confirmed") }}
+{{ ui.heading("Thank you, " ~ supporter_name ~ ".") }}
+{{ ui.p("Your gift has gone through. Your student has been notified and their account is already upgraded.") }}
+
+{% call ui.panel() %}
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+    <tr>
+      <td style="padding-bottom:10px;font-size:14px;color:#7B7464;">Gift</td>
+      <td align="right" style="padding-bottom:10px;font-size:14px;color:#1A1610;"><strong>{{ duration_months }} month{% if duration_months > 1 %}s{% endif %} of Tauka Tutor</strong></td>
+    </tr>
+    <tr>
+      <td style="padding-bottom:10px;font-size:14px;color:#7B7464;">Access until</td>
+      <td align="right" style="padding-bottom:10px;font-size:14px;color:#1A1610;"><strong>{{ expires_at }}</strong></td>
+    </tr>
+    {% if receipt_url %}
+    <tr>
+      <td colspan="2" style="border-top:1px solid #CFC6AC;padding-top:12px;font-size:14px;">
+        <a href="{{ receipt_url }}" style="color:#8E5008;">View your receipt</a>
+      </td>
+    </tr>
+    {% endif %}
+  </table>
+{% endcall %}
+
+{# Supporters have no portal and often no account at all, so there is nothing
+   to link for "track their progress" — the milestone emails are the tracking. #}
+{{ ui.p("We will write again when they hit their first milestones, so you can see what your gift bought. Nothing for you to do in the meantime.") }}
+
+<div style="margin-top:6px;">{{ ui.quiet_link(web_base_url ~ "/curriculum", "See what they will be working through") }}</div>
+
 {% endblock %}
