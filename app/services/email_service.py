@@ -12,7 +12,7 @@ Three providers, selected by EMAIL_PROVIDER:
   console  — no network at all. Renders the message to EMAIL_OUTBOX_DIR as a
              timestamped .html and logs a one-line summary.
 
-Sends are best-effort by design: callers are BackgroundTasks on user-facing
+Sends are best-effort by design: callers wrap them in run_followup on user-facing
 flows (placement-test results, gift activation), and a mail outage must not fail
 the request that triggered it. Every path returns {"id", "status"} and logs
 rather than raising — but an unsendable configuration is now logged loudly at
@@ -132,7 +132,10 @@ def _send_smtp(recipients: list[str], subject: str, html_body: str,
     # in which case STARTTLS is not offered and must not be attempted.
     smtp_class = smtplib.SMTP_SSL if settings.smtp_ssl else smtplib.SMTP
 
-    with smtp_class(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+    # Timeout is a setting, not 15s: sends now run inside the request (see
+    # app/core/followup.py) and 15s exceeds a serverless function's whole budget.
+    with smtp_class(settings.smtp_host, settings.smtp_port,
+                    timeout=settings.smtp_timeout_seconds) as smtp:
         if settings.smtp_starttls and not settings.smtp_ssl:
             smtp.starttls()
         if settings.smtp_user:

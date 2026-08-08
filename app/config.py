@@ -73,6 +73,28 @@ class Settings(BaseSettings):
     # backend root. Each send lands as a timestamped .html you can open.
     email_outbox_dir: str = ".outbox"
 
+    # Socket timeout for a single SMTP send. Was hard-coded at 15s, which is
+    # longer than the ENTIRE function budget on Vercel Hobby (10s) — a stalled
+    # send would be killed by the platform mid-connection with no response
+    # returned at all, rather than failing cleanly and letting the request
+    # finish. Keep this comfortably below the platform limit.
+    smtp_timeout_seconds: int = 8
+
+    # ── Follow-up work ────────────────────────────────────────────────────────
+    # Ceiling for post-request effects (emails, referral linkage, usage logging)
+    # now that they run inline — see app/core/followup.py. Sized for Vercel
+    # Hobby's 10s function limit with room for the request itself; raise it on
+    # Pro (60s default) or on any persistent host.
+    followup_timeout_seconds: float = 6.0
+
+    # ── Scheduled jobs ────────────────────────────────────────────────────────
+    # Shared secret for GET /tasks/daily. Vercel Cron sends it automatically as
+    # `Authorization: Bearer $CRON_SECRET` when the env var of that name is set
+    # on the project. Empty means the endpoint refuses every request — it fails
+    # CLOSED, because an open endpoint here would let anyone trigger mail to
+    # every supporter you have.
+    cron_secret: str = ""
+
     # ── App URLs ──────────────────────────────────────────────────────────────
     # Both are injected into every email template as Jinja globals, so a wrong
     # value here silently ships dead links in mail already sent.
@@ -110,6 +132,61 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    # ── Deployment sanity ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_local(value: str) -> bool:
+        v = (value or "").lower()
+        return any(h in v for h in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]"))
+
+    @property
+    def mail_leaves_this_machine(self) -> bool:
+        """
+        Will a send actually reach a stranger's inbox?
+
+        `console` writes to disk. `smtp` against a local host is a catcher
+        (Mailpit), which is also local-only. Anything else — Resend, or SMTP
+        against a real host like smtp.zoho.com — delivers for real.
+        """
+        if self.email_provider == "console":
+            return False
+        if self.email_provider == "smtp":
+            return not self._is_local(self.smtp_host)
+        return True
+
+    def deployment_problems(self) -> list[str]:
+        """
+        Misconfigurations that are silent at startup and only visible to a
+        recipient, checked once when the app boots.
+
+        The specific failure this exists to catch: the dev `.env` points
+        WEB_BASE_URL at the Vite dev server so links in locally-caught mail are
+        clickable, which is correct locally — but deploying that same file sends
+        real Zoho mail to real people containing `http://localhost:5173/...`.
+        Nothing raises, nothing logs, and the send is reported as `sent`. The
+        recipient sees a dead link.
+
+        Inferred rather than gated on an ENVIRONMENT var deliberately: a var
+        that has to be set on the host is one more thing a deploy can forget,
+        and forgetting it would silence the check exactly when it matters. A
+        real mail provider paired with a localhost URL is a contradiction in any
+        environment, so it needs no flag to detect.
+        """
+        problems: list[str] = []
+        if not self.mail_leaves_this_machine:
+            return problems
+
+        for name, value in (("WEB_BASE_URL", self.web_base_url),
+                            ("API_BASE_URL", self.api_base_url)):
+            if self._is_local(value):
+                problems.append(
+                    f"{name}={value!r} is a local address, but EMAIL_PROVIDER="
+                    f"{self.email_provider!r} delivers mail externally. Every "
+                    f"link built from {name} will be dead for the recipient. "
+                    f"Unset it to use the default, or set it to the public origin."
+                )
+        return problems
 
     # ── Encryption (payout settings at rest) ─────────────────────────────────
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

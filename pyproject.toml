@@ -3,7 +3,9 @@ name = "tauka-py-backend"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-    "apscheduler>=3.11.2",
+    # apscheduler removed 2026-08-08: in-process scheduling cannot run on a
+    # serverless host and double-fires on any multi-instance one. Daily jobs are
+    # triggered externally via GET /tasks/daily.
     "cryptography>=46.0.6",
     "fastapi[standard]>=0.135.2",
     "jinja2>=3.1.6",

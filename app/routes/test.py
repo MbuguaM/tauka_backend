@@ -1,8 +1,9 @@
 import hashlib
 import io
 import logging
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
+from app.core.followup import run_followup
 from app.dependencies import get_current_user, require_admin
 from app.models.schemas import (
     Phase1SubmitRequest,
@@ -36,7 +37,7 @@ def _get_ip_hash(request: Request) -> str:
 
 
 @router.post("/{language}/start")
-async def start_test(language: str, request: Request, bg: BackgroundTasks):
+async def start_test(language: str, request: Request):
     """PUBLIC — create a new test session and return Phase 1 questions."""
     ip_hash = _get_ip_hash(request)
     allowed, reason = check_anonymous_rate_limit(ip_hash, "test_start", max_requests=5)
@@ -71,10 +72,16 @@ async def start_test(language: str, request: Request, bg: BackgroundTasks):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Link referral to session (sets test_started=true and copies sender_student_id)
+    # Link referral to session (sets test_started=true and copies sender_student_id).
+    # Inline: this is a DB write the referral loop depends on, and deferring it
+    # past the response meant it never happened on serverless — the referrer
+    # would never be credited for a test they prompted.
     if referral_code:
         from app.services.referral_service import connect_test_session
-        bg.add_task(connect_test_session, referral_code, result["session_id"])
+        await run_followup(
+            connect_test_session(referral_code, result["session_id"]),
+            label=f"connect_test_session {referral_code}",
+        )
 
     return result
 
@@ -98,10 +105,10 @@ async def capture_email_route(req: EmailCaptureRequest):
 
 
 @router.post("/submit-final")
-async def submit_final_route(req: FinalSubmitRequest, bg: BackgroundTasks):
+async def submit_final_route(req: FinalSubmitRequest):
     """PUBLIC — score full test and send result email."""
     try:
-        result = await submit_final(req.session_id, req.answers, background_tasks=bg)
+        result = await submit_final(req.session_id, req.answers)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -111,7 +118,9 @@ async def submit_final_route(req: FinalSubmitRequest, bg: BackgroundTasks):
     ).execute()
     if session_data.data and session_data.data[0].get("referral_code"):
         from app.services.referral_service import handle_test_completion
-        bg.add_task(handle_test_completion, session_data.data[0]["referral_code"])
+        code = session_data.data[0]["referral_code"]
+        await run_followup(handle_test_completion(code),
+                           label=f"handle_test_completion {code}")
 
     return result
 
@@ -128,6 +137,27 @@ async def log_share(req: ShareEventRequest):
     except Exception as exc:
         logger.warning("Share log failed: %s", exc)
     return {"logged": True}
+
+
+@router.get("/{language}/result/{session_id}")
+async def get_result(language: str, session_id: str):
+    """
+    PUBLIC — re-serve a completed result to a cold page load.
+
+    Must be declared BEFORE the /og-image route below or it would shadow it:
+    FastAPI matches in declaration order and `/{session_id}` alone cannot
+    swallow the longer path, but the reverse ordering trap is easy to
+    reintroduce when adding routes here.
+
+    Unauthenticated by design — the whole point is a shared link that opens for
+    someone with no account. The uuid is the capability; `get_public_result`
+    allowlists what that buys.
+    """
+    from app.services.test_service import get_public_result
+    try:
+        return await get_public_result(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Result not found")
 
 
 @router.get("/{language}/result/{session_id}/og-image")

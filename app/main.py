@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,14 +6,25 @@ from app.config import settings
 from app.routes import (
     ai, messaging, calling,
     subscriptions, test, supporters, gifts, testimonials,
-    referrals, account, tutor_portal,
+    referrals, account, tutor_portal, tasks,
 )
-from app.tasks.scheduler import start_scheduler
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_scheduler()
+    # Deploy-time misconfigurations that nothing else surfaces: they raise no
+    # exception, log nothing on the send path, and are visible only to whoever
+    # receives the mail. Logged at ERROR because a deploy that ships the dev
+    # .env is the exact case this catches, and a warning would scroll past.
+    for problem in settings.deployment_problems():
+        logger.error("DEPLOYMENT: %s", problem)
+
+    # No scheduler is started here. Daily jobs are triggered externally via
+    # GET /tasks/daily — see app/routes/tasks.py for why in-process scheduling
+    # was removed rather than fixed.
     yield
 
 
@@ -61,3 +73,16 @@ app.include_router(account.router, prefix="/account")
 
 # Tutor portal
 app.include_router(tutor_portal.router, prefix="/tutor")
+
+# Externally-triggered scheduled jobs (Vercel Cron). Guarded by CRON_SECRET.
+app.include_router(tasks.router, prefix="/tasks")
+
+
+@app.get("/health")
+async def health():
+    """
+    Liveness probe. Deliberately touches nothing — no database, no Redis, no
+    mail — so a degraded dependency cannot make the platform kill a process
+    that is serving traffic perfectly well for every path that does not need it.
+    """
+    return {"status": "ok"}

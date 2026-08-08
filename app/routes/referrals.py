@@ -1,5 +1,6 @@
 import logging
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from app.core.followup import run_followup
 from app.dependencies import get_current_user
 from app.models.schemas import CreateReferralRequest, CreateReferralResponse, ReferralLookupResponse
 from app.services import referral_service
@@ -23,7 +24,6 @@ def _get_ip_hash(request: Request) -> str:
 async def create_referral(
     req: CreateReferralRequest,
     request: Request,
-    bg: BackgroundTasks,
 ):
     """PUBLIC — unauthenticated visitor creates a referral share link."""
     ip_hash = _get_ip_hash(request)
@@ -56,7 +56,6 @@ async def create_referral(
 @router.post("/create-authenticated", response_model=CreateReferralResponse)
 async def create_referral_authenticated(
     req: CreateReferralRequest,
-    bg: BackgroundTasks,
     user_id: str = Depends(get_current_user),
 ):
     """AUTHENTICATED — logged-in student creates a referral share link."""
@@ -99,9 +98,10 @@ async def my_referrals(user_id: str = Depends(get_current_user)):
 
 
 @router.get("/lookup/{referral_code}", response_model=ReferralLookupResponse)
-async def lookup_referral(referral_code: str, bg: BackgroundTasks):
+async def lookup_referral(referral_code: str):
     """PUBLIC — called by the test landing page when a ref param is present."""
-    bg.add_task(referral_service.record_link_opened, referral_code)
+    await run_followup(referral_service.record_link_opened(referral_code),
+                       label=f"record_link_opened {referral_code}")
 
     result = await referral_service.get_referral_by_code(referral_code)
     if not result:

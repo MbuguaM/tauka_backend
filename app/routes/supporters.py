@@ -1,6 +1,7 @@
 import logging
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, Response
+from app.core.followup import run_followup
 from app.dependencies import get_current_user
 from app.models.schemas import (
     ApproveRequest,
@@ -20,7 +21,7 @@ _TRANSPARENT_GIF = (
 
 
 @router.post("/approve")
-async def approve(req: ApproveRequest, bg: BackgroundTasks):
+async def approve(req: ApproveRequest):
     """PUBLIC — supporter approves the platform for a referred student."""
     try:
         result = await supporter_service.approve_for_student(
@@ -36,7 +37,8 @@ async def approve(req: ApproveRequest, bg: BackgroundTasks):
     ).execute()
     if session_data.data and session_data.data[0].get("referral_code"):
         from app.services.referral_service import handle_approval
-        bg.add_task(handle_approval, session_data.data[0]["referral_code"])
+        code = session_data.data[0]["referral_code"]
+        await run_followup(handle_approval(code), label=f"handle_approval {code}")
 
     return result
 

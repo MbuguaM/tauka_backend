@@ -2,6 +2,7 @@ import logging
 import math
 import random
 from datetime import datetime, timezone
+from app.core.followup import run_followups
 from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
@@ -191,8 +192,8 @@ async def create_test_session(
     referral_code: str | None = None,
 ) -> dict:
     """Create a new test session and return Phase 1 questions."""
-    # One fetch serves the validation count and both selection passes below.
-    bank = _fetch_all_active(language)
+    # One metadata fetch serves the validation count and both selection passes.
+    bank = _fetch_selection_pool(language)
 
     total = len(bank)
     if total < 20:
@@ -223,11 +224,16 @@ async def create_test_session(
 
     session_id = session_result.data[0]["id"]
 
-    _shuffle_options(phase1_questions)
+    # Only Phase 1 is served now. The Phase 2 reservation above exists so
+    # `question_ids` is complete from the start; those rows are re-selected and
+    # hydrated in `capture_email`, so fetching their content here would be
+    # 15 questions of content thrown away on every session.
+    phase1_full = _hydrate(phase1_questions)
+    _shuffle_options(phase1_full)
 
     return {
         "session_id": session_id,
-        "questions": _to_client_shape(phase1_questions),
+        "questions": _to_client_shape(phase1_full),
     }
 
 
@@ -249,27 +255,70 @@ def _shuffle_options(questions: list[dict]) -> None:
                 random.shuffle(opts)
 
 
-def _fetch_all_active(language: str) -> list[dict]:
+# Selection reads four columns and nothing else — `_filter_pool` needs the level
+# and the skill, `_pick_balanced` / `_interleave_modes` need the mode, and every
+# caller needs the id. Measured on the live bank (158 active Amharic rows): these
+# four total 4.5 kB against 168 kB for the whole table, so `select *` downloaded
+# 97% of its bytes to throw them away. `content` alone is 95 kB and `explanation`
+# + `distractor_rationale` another 54 kB — the latter two are reviewer-only and
+# `_to_client_shape` has never let them past the API boundary.
+_SELECTION_FIELDS = "id, cefr_level, skill_area, question_type"
+
+# What it takes to actually render a question, fetched only for the ~20 that were
+# chosen. Mirrors _CLIENT_ROW_FIELDS + the `content` jsonb that _to_client_shape
+# lifts presentation keys out of, and that _shuffle_options reaches into.
+_SERVE_FIELDS = "id, language, skill_area, cefr_level, source_unit, question_type, content"
+
+
+def _fetch_selection_pool(language: str) -> list[dict]:
     """
-    Every active question for a language, in ONE round trip.
+    Selection metadata for every active question in a language, in ONE round trip.
 
     Selection needs ten different slices of this bank (four skills × two phases,
     plus two backfills). Issuing a query per slice meant ten sequential requests
     to a remote Supabase at ~1.2-1.7s of latency each, so creating a session took
     ~16s and the web app sat on "Preparing your assessment…" long enough to look
-    hung. The bank is small — 66 rows / 91 KB for Amharic A1-A2 — so the whole
-    thing is cheaper to fetch once and slice in memory than to filter server-side
-    ten times. Callers pass the result down through `pool=`.
+    hung. Fetching once and slicing in memory is both fewer round trips and, now
+    that it is column-scoped, less data than any one of those queries returned.
+    Callers pass the result down through `pool=`.
 
-    Deliberately unbounded, as before: an earlier version capped candidates at 2
-    rows (Phase 1) and 5 rows (Phase 2) with no ORDER BY, so Postgres returned
-    the same rows every time and the same handful of questions circulated no
-    matter how large the bank grew. Randomisation happens in Python, over the
-    whole pool.
+    Deliberately unbounded in rows, as before: an earlier version capped
+    candidates at 2 rows (Phase 1) and 5 rows (Phase 2) with no ORDER BY, so
+    Postgres returned the same rows every time and the same handful of questions
+    circulated no matter how large the bank grew. Randomisation happens in
+    Python, over the whole pool. Bounding it by *column* is safe in a way that
+    bounding it by row was not — every row is still a candidate.
     """
-    return db.schema("app").table("test_questions").select("*").eq(
+    return db.schema("app").table("test_questions").select(_SELECTION_FIELDS).eq(
         "language", language
     ).eq("active", True).execute().data or []
+
+
+def _hydrate(selected: list[dict]) -> list[dict]:
+    """
+    Fetch renderable content for the chosen questions only, preserving order.
+
+    `selected` carries metadata rows from `_fetch_selection_pool`, which have no
+    `content` — so this must run before `_shuffle_options` or `_to_client_shape`,
+    both of which read it. Order is restored from `selected` rather than trusted
+    from the response: `_interleave_modes` spent real effort spacing the modes
+    out, and PostgREST makes no ordering promise for an `in_` filter.
+
+    No `active` filter here. A question deactivated mid-sitting should still
+    render for the candidate already holding it — the pool refetch is what stops
+    it being *newly* served.
+    """
+    ids = [q["id"] for q in selected]
+    if not ids:
+        return []
+    rows = db.schema("app").table("test_questions").select(
+        _SERVE_FIELDS
+    ).in_("id", ids).execute().data or []
+    by_id = {r["id"]: r for r in rows}
+    missing = [qid for qid in ids if qid not in by_id]
+    if missing:
+        logger.warning("Selected questions vanished before hydration: %s", missing)
+    return [by_id[qid] for qid in ids if qid in by_id]
 
 
 def _filter_pool(pool: list[dict], levels: list[str],
@@ -321,7 +370,7 @@ def _interleave_modes(questions: list[dict]) -> list[dict]:
 def _select_phase1_questions(language: str,
                              pool: list[dict] | None = None) -> list[dict]:
     """Select 5 Phase 1 questions: A1-A2, one per skill area plus a top-up."""
-    bank = _fetch_all_active(language) if pool is None else pool
+    bank = _fetch_selection_pool(language) if pool is None else pool
 
     questions: list[dict] = []
     chosen_ids: set = set()
@@ -361,7 +410,7 @@ def _select_phase2_questions(
     appear twice in one sitting, and `submit_final` then counts it twice,
     inflating that skill's denominator.
     """
-    bank = _fetch_all_active(language) if pool is None else pool
+    bank = _fetch_selection_pool(language) if pool is None else pool
 
     exclude_ids = set(exclude_ids or ())
     floor_idx = _CEFR_LEVELS.index(phase_1_floor) if phase_1_floor in _CEFR_LEVELS else 0
@@ -476,12 +525,14 @@ async def capture_email(session_id: str, name: str, email: str) -> dict:
         "phase_2_started_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", session_id).execute()
 
-    _shuffle_options(phase2_questions)
+    phase2_full = _hydrate(phase2_questions)
+    _shuffle_options(phase2_full)
 
-    return {"questions": _to_client_shape(phase2_questions)}
+    return {"questions": _to_client_shape(phase2_full)}
 
 
-async def submit_final(session_id: str, answers: dict, background_tasks=None) -> dict:
+async def submit_final(session_id: str, answers: dict,
+                       send_notifications: bool = True) -> dict:
     """Score all 20 questions and compute final CEFR result."""
     result = db.schema("app").table("test_sessions").select("*").eq("id", session_id).execute()
     if not result.data:
@@ -546,30 +597,48 @@ async def submit_final(session_id: str, answers: dict, background_tasks=None) ->
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", session_id).execute()
 
-    # Background tasks: send result email, notify referrer
-    if background_tasks:
+    # Result email + referrer notification, run INLINE rather than deferred past
+    # the response. This used to take a FastAPI `BackgroundTasks` and hand the
+    # work to it — which on serverless ran nothing at all, because the function
+    # freezes the moment the response returns, so the taker's result email was
+    # simply never sent. The parameter is now an honest boolean rather than a
+    # scheduler that was never doing any scheduling.
+    #
+    # Concurrent because two sequential SMTP sends would sum into the request,
+    # and the platform's function limit is the real ceiling here.
+    if send_notifications:
         from app.services.email_service import send_template_email
+        jobs: list[tuple] = []
+
         email = session.get("email")
         if email:
-            background_tasks.add_task(
-                send_template_email,
-                to=email,
-                template_name="test_result",
-                template_data={
-                    "subject": f"Your Amharic test result: {cefr_result}",
-                    "name": session.get("name", ""),
-                    "cefr_result": cefr_result,
-                    "breakdown": breakdown,
-                    "description": description,
-                    "share_url": share_url,
-                },
-            )
+            jobs.append((
+                send_template_email(
+                    to=email,
+                    template_name="test_result",
+                    template_data={
+                        "subject": f"Your Amharic test result: {cefr_result}",
+                        "name": session.get("name", ""),
+                        "cefr_result": cefr_result,
+                        "breakdown": breakdown,
+                        "description": description,
+                        "share_url": share_url,
+                    },
+                ),
+                f"test_result email to session {session_id}",
+            ))
+
         referrer_id = session.get("referrer_student_id")
         if referrer_id:
-            background_tasks.add_task(
-                _notify_referrer, referrer_id, session.get("name", ""), cefr_result,
-                (session.get("language") or "").capitalize(),
-            )
+            jobs.append((
+                _notify_referrer(
+                    referrer_id, session.get("name", ""), cefr_result,
+                    (session.get("language") or "").capitalize(),
+                ),
+                f"referrer notification for session {session_id}",
+            ))
+
+        await run_followups(*jobs)
 
     return {
         "session_id": session_id,
@@ -585,6 +654,66 @@ async def submit_final(session_id: str, answers: dict, background_tasks=None) ->
         "language": session["language"],
         "share_url": share_url,
         "referrer_student_id": session.get("referrer_student_id"),
+    }
+
+
+async def get_public_result(session_id: str) -> dict:
+    """
+    Re-serve a completed result for a link someone opened cold.
+
+    `submit_final` returns the result to the browser that finished the test and
+    nothing persisted it in a fetchable form, so the result lived only in that
+    one tab's router state. Every other way of arriving at the page — the
+    `share_url` mailed to the taker, a WhatsApp or copy-link share, or simply
+    refreshing — rendered the honest but useless "your answers weren't scored"
+    state. Sharing a result is the referral loop, so that path being dead made a
+    spec'd feature a no-op.
+
+    An ALLOWLIST, deliberately, and one that never touches `answers` or
+    `question_ids`: this endpoint is public and unauthenticated, so anything
+    returned here is readable by anyone holding the link. The session id is a
+    uuid and is the capability — unguessable, and the taker chose to share it.
+    `email` and `ip_hash` are on the row and must never join that trade.
+    """
+    result = db.schema("app").table("test_sessions").select(
+        "id, language, status, name, cefr_result, final_score, completed_at"
+    ).eq("id", session_id).execute()
+
+    if not result.data:
+        raise ValueError("Result not found")
+
+    session = result.data[0]
+    # An abandoned or in-flight session has no result to show, and saying so is
+    # better than rendering a half-scored one as though it were final.
+    if session.get("status") != "completed" or not session.get("cefr_result"):
+        raise ValueError("Result not found")
+
+    final_score = session.get("final_score") or {}
+    breakdown = final_score.get("breakdown") or {}
+    language = session.get("language") or ""
+
+    # Count what was actually scored, matching `submit_final`'s response rather
+    # than `final_score.total_questions` (which stores the number reserved). A
+    # returning visitor must not see a different denominator from the one on
+    # screen when they finished.
+    total_questions = sum(
+        (data.get("total") or 0)
+        for data in breakdown.values() if isinstance(data, dict)
+    )
+
+    return {
+        "session_id": session["id"],
+        "cefr_result": session["cefr_result"],
+        "total_correct": final_score.get("total_correct", 0),
+        "total_questions": total_questions,
+        "breakdown": breakdown,
+        # Not stored — regenerated from the same inputs, so it is identical.
+        "description": _generate_description(
+            session["cefr_result"], language, breakdown),
+        "name": session.get("name"),
+        "completed_at": session.get("completed_at"),
+        "language": language,
+        "share_url": f"{settings_web_base_url()}/test/{language}/result/{session['id']}",
     }
 
 

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from app.core.followup import run_followup
 from app.dependencies import get_current_user
 from app.models.schemas import AIRequest
 from app.services.ai_services import call_ai
@@ -19,7 +20,6 @@ _PROVIDER_MODEL = {
 @router.post("/generate")
 async def generate(
     req: AIRequest,
-    bg: BackgroundTasks,
     user_id: str = Depends(get_current_user),
 ):
     if req.mode == "image_translation" and not req.image_url:
@@ -49,6 +49,11 @@ async def generate(
         raise HTTPException(status_code=400, detail=str(e))
 
     actual = count_tokens(req.prompt, model=model) + count_tokens(response, model=model)
-    bg.add_task(log_usage, user_id, f"ai_tokens:{req.provider}:{req.mode}", actual)
+    # Inline: usage feeds the daily/monthly token caps, so losing these writes
+    # silently raises every user's effective limit. One insert against Supabase.
+    await run_followup(
+        log_usage(user_id, f"ai_tokens:{req.provider}:{req.mode}", actual),
+        label=f"log_usage {user_id} {req.provider}",
+    )
 
     return {"response": response, "tokens": actual, "provider": req.provider, "mode": req.mode}
