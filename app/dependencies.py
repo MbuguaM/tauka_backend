@@ -24,6 +24,14 @@ def get_current_user(
             credentials.credentials,
             settings.supabase_jwt_secret,
             algorithms=["HS256"],
+            # REQUIRED. Supabase issues user tokens with aud="authenticated".
+            # PyJWT 2.x raises InvalidAudienceError when a token carries an
+            # `aud` claim and the caller does NOT declare an expected audience
+            # — so omitting this rejected every genuine user token with
+            # "Invalid token", 401-ing every authenticated route in the API.
+            # It went unnoticed because the test fixture minted tokens with no
+            # `aud` claim, which is the one shape that passed.
+            audience="authenticated",
             options={"require": ["sub", "exp"]},
         )
     except jwt.ExpiredSignatureError:

@@ -10,6 +10,7 @@
 4. If you need a column on a table you don't own, add to `CONFLICT_LOG.md` as a `SCHEMA_REQUEST`.
 5. If two projects both claim ownership of the same table, that is a CONFLICT — log it.
 6. The `app` schema is used for all tables. `public` schema is not used.
+   *One documented exception:* `web.interest` (tauka-react-web) — see below.
 7. The Python backend (tauka-python) uses `supabase.schema("app").table(...)` for all table access.
 8. The Flutter client (tauka-flutter) uses Supabase Dart SDK with `.schema('app')` qualifier.
 
@@ -105,6 +106,29 @@
 | user_achievements | tauka-flutter | platform_config | tauka-flutter only |
 | content_approval_requests | tauka-flutter | content_governance | tauka-flutter only |
 | dictionary_contributions | tauka-flutter | content_governance | tauka-flutter only |
+| **web.interest** | **tauka-react-web** | marketing_capture | tauka-react-web only. NOT in the `app` schema — see the note below |
+
+---
+
+## The `web` schema — the one documented exception to Rule 6
+
+`web.interest` is the sole table outside `app`. It is **marketing-site signup
+capture** (`email`, `country`, `phone`, `languages[]`, `category`,
+`pioneer_number`), written by the public landing page before a user account
+exists — so it sits deliberately outside the authenticated `app` surface.
+
+- **Owner: tauka-react-web.** Only that project may `CREATE`/`ALTER` it.
+- **No API role has USAGE on the `web` schema** (`anon`, `authenticated`,
+  `service_role` all lack it), so it is not reachable over PostgREST despite
+  carrying table-level grants. Those grants are vestigial.
+- **RLS is enabled** with a single `INSERT` policy (`"public Insert"`). The
+  former `"Enable read access for all users"` SELECT policy was dropped in §52 —
+  it was `USING (true)` to PUBLIC and would have exposed every signup's email
+  and phone the moment anyone granted schema USAGE.
+- Ownership assigned 2026-08-09 (CONFLICT-016). tauka-flutter applied the §52
+  security fix before ownership existed; further changes belong to
+  tauka-react-web.
+- Not a precedent. Rule 6 stands: new tables go in `app`.
 
 ---
 

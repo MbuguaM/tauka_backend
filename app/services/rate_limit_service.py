@@ -92,6 +92,51 @@ def check_rate_limit(
     return True, "OK"
 
 
+def get_rate_limit_status(user_id: str, provider: str = "deepseek") -> dict:
+    """
+    Read the caller's remaining daily token budget WITHOUT consuming any of it.
+
+    Backs GET /ai/balance, which the Flutter client calls before each AI
+    request so it can show a real "N left today" figure and short-circuit
+    instead of eating a 429.  Reads only — never incr — so polling this
+    endpoint can never exhaust the budget it reports.
+
+    PY-005: fails open.  When Redis is unavailable the counters do not exist,
+    so the honest answer is "full budget" — the same answer check_rate_limit()
+    gives in that state.
+    """
+    plan = _PLANS.get(provider, _PLANS["deepseek"])
+    daily_limit = plan["daily_token_limit"]
+    monthly_limit = plan["monthly_token_limit"]
+    now = datetime.utcnow()
+
+    ns = f"{provider}:{user_id}"
+    day_key = f"tokens:{ns}:day:{now.strftime('%Y%m%d')}"
+    month_key = f"tokens:{ns}:month:{now.strftime('%Y%m')}"
+
+    used_day = 0
+    used_month = 0
+
+    redis_client = get_redis()
+    if redis_client is not None:
+        try:
+            raw_day, raw_month = redis_client.mget(day_key, month_key)
+            used_day = int(raw_day or 0)
+            used_month = int(raw_month or 0)
+        except Exception:
+            used_day = 0
+            used_month = 0
+
+    return {
+        "remaining": max(0, daily_limit - used_day),
+        "limit": daily_limit,
+        "used": used_day,
+        "monthly_remaining": max(0, monthly_limit - used_month),
+        "monthly_limit": monthly_limit,
+        "provider": provider,
+    }
+
+
 def check_anonymous_rate_limit(
     ip_hash: str,
     endpoint: str,
