@@ -1,5 +1,12 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from typing import Literal, Optional, Any
+
+from app.services.ai_prompts import (
+    FRAMED_MODES,
+    MAX_CONTEXT,
+    MAX_PASSAGE,
+    MAX_QUOTE,
+)
 
 
 # ── Existing models ────────────────────────────────────────────────────────────
@@ -7,9 +14,40 @@ from typing import Literal, Optional, Any
 class AIRequest(BaseModel):
     prompt: str
     provider: Literal["openai", "deepseek", "gemini"] = "deepseek"
-    mode: Literal["chat", "translation", "image_translation"] = "chat"
+    mode: Literal[
+        "chat",
+        "translation",
+        "image_translation",
+        # Framed modes: the server owns the instructions and fences the content.
+        # `prompt` carries the primary MATERIAL — the highlighted passage, or
+        # the chat message — not a prompt. See app/services/ai_prompts.py.
+        "lesson_explain",
+        "analyse_amharic",
+    ] = "chat"
     target_language: Optional[str] = None
     image_url: Optional[str] = None
+
+    # Framed modes only; ignored by the others.
+    passage: Optional[str] = Field(None, max_length=MAX_PASSAGE)
+    context: Optional[str] = Field(None, max_length=MAX_CONTEXT)
+
+    @model_validator(mode="after")
+    def _cap_framed_material(self):
+        """
+        Bound the material on framed modes.
+
+        `prompt` is deliberately uncapped for `chat` — that path predates this
+        and capping it now would reject requests that work today. On the framed
+        modes it is content rather than a prompt, so it gets the same treatment
+        as the other two fields: a cap is both an injection surface reduction
+        and the thing that stops one request spending a whole day's token
+        budget.
+        """
+        if self.mode in FRAMED_MODES and len(self.prompt) > MAX_QUOTE:
+            raise ValueError(
+                f"prompt must be at most {MAX_QUOTE} characters in {self.mode} mode"
+            )
+        return self
 
 
 class MessageRequest(BaseModel):

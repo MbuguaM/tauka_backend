@@ -46,7 +46,7 @@ The `student` and `tutor` tables use the auth user UUID as primary key (not a se
 - `app.student.stripe_customer_id` and `stripe_subscription_id` are written ONLY by tauka-python via service role. Flutter client has no write path to these columns.
 - A user can have BOTH a `student` row AND a `tutor` row (e.g., a tutor who also takes courses as a student).
 - `tutor_started_at IS NOT NULL AND tutor_ended_at IS NULL` means the student currently has an assigned tutor.
-- `app.tutor_course.student_id` stores a tutor's UUID (historical naming bug — see [[CONFLICT_LOG]] CONFLICT-012).
+- `app.tutor_course` keys on `tutor_id` (Amendment A2 renamed the old `student_id` column; see [[CONFLICT_LOG]] CONFLICT-012, resolved).
 
 ### Data flow
 1. Student signs up → `app.student` row created by Flutter with `tier='free'`.
@@ -147,6 +147,21 @@ Created when a user completes the tutor onboarding pipeline (admin action). `sta
 - **Tutor (Flutter):** UPDATE own row (bio, language) via `tutor_update_own`.
 - **Python backend:** Reads `per_session_rate_cents` for earnings calculation.
 
+#### Write ordering (REQUIRED)
+The two FKs on `id` mean a session is NOT sufficient to insert here. `app.user_profiles`
+must already hold the row, or the insert fails with `23503`
+(`tutor_user_profile_fkey`). Same for `app.student`.
+
+Write order is therefore always: **`auth.users` -> `app.user_profiles` -> `app.tutor` /
+`app.student` -> `app.tutor_course` / `app.student_course`.**
+
+This is not theoretical. Onboarding fired the `app.tutor` insert unawaited, racing the
+`user_profiles` write it depends on, and discarded the resulting 23503 in a bare
+`catch (_) {}`. Production carried zero `app.tutor` rows; the only visible symptom was a
+23503 from `tutor_course` on the course picker, several screens later. Fixed 2026-08-19 in
+`OnboardingData.updateUserType` and `SupabaseService.upsertTutor`/`upsertStudent`, which
+now ensure the profile row first and return whether they succeeded.
+
 ---
 
 ### Table: student_course
@@ -171,13 +186,13 @@ Created when a student enrolls. Deleted (hard delete) when a student unenrolls. 
 ### Table: tutor_course
 
 #### Purpose
-Associates tutors with the courses they teach. The column named `student_id` actually stores the tutor's UUID — this is a historical naming error. See CONFLICT_LOG CONFLICT-012 for the pending rename.
+Associates tutors with the courses they teach. The key column is `tutor_id`; the old, misleadingly named `student_id` was renamed by Amendment A2 (CONFLICT-012, resolved 2026-08-19). The FK constraint still carries its historical name, `tutor_course_student_id_fkey` — that is cosmetic.
 
 #### Columns
 
 | Column | Type | Nullable | Default | Purpose | Constraint/Validation |
 |---|---|---|---|---|---|
-| student_id | uuid | NO | — | **ACTUALLY STORES TUTOR ID** — see CONFLICT-012 | FK → app.tutor(id) ON DELETE CASCADE |
+| tutor_id | uuid | NO | — | The tutor teaching this course | FK → app.tutor(id) ON DELETE CASCADE |
 | course_id | uuid | NO | — | Course the tutor teaches | FK → app.course(id) ON DELETE CASCADE |
 | student_rating | bigint | YES | NULL | Average rating tutor gave to this course content | — |
 
@@ -246,7 +261,7 @@ Add timestamped rows to a new `tutor_student_history` table rather than modifyin
 - Do NOT write `student.tier` from Flutter — Python is the sole writer.
 - Do NOT add a `subscription_tier` column to `app.student` — it already has `tier`.
 - Do NOT create a `tutor_profile` satellite table — extend `app.tutor` with columns.
-- Do NOT rename `tutor_course.student_id` without updating all queries that reference it (see CONFLICT-012).
+- `tutor_course.student_id` was renamed to `tutor_id` (CONFLICT-012, resolved). Any query still filtering on `student_id` is broken and must be corrected.
 
 ---
 

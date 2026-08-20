@@ -3,6 +3,7 @@ Multi-provider AI service.
 
 Supported providers:  openai | deepseek | gemini
 Supported modes:      chat | translation | image_translation
+                      lesson_explain | analyse_amharic  (framed — see ai_prompts)
 
 Image URL accepted as either:
   • An HTTPS URL  (https://...)
@@ -210,9 +211,15 @@ async def call_ai(
     mode: str = "chat",
     target_language: str | None = None,
     image_url: str | None = None,
+    system: str | None = None,
 ) -> str:
     """
     Route a request to the correct provider and mode.
+
+    `system` carries server-owned instructions for the framed modes. It is built
+    by app.services.ai_prompts and never comes from the client — that is the
+    whole point of those modes. Passing it on any other mode is allowed and
+    simply prepends a system turn.
 
     Raises ValueError for unsupported combinations.
     """
@@ -233,6 +240,29 @@ async def call_ai(
             return await call_deepseek_translate(prompt, lang)
         if provider == "gemini":
             return await call_gemini_translate(prompt, lang)
+
+    if system:
+        if provider == "openai":
+            return await _call_openai(
+                [{"role": "system", "content": system},
+                 {"role": "user", "content": prompt}]
+            )
+        if provider == "deepseek":
+            return await _call_deepseek(
+                [{"role": "system", "content": system},
+                 {"role": "user", "content": prompt}]
+            )
+        if provider == "gemini":
+            # This Gemini payload shape (v1beta generateContent with bare
+            # `contents`) carries no system role, so the instructions are
+            # prepended to the single part instead. The fence still does its
+            # work — it is the nonce, not the role, that content cannot forge —
+            # but the separation is weaker here than on the other two providers,
+            # which is a reason to keep deepseek as the default for these modes.
+            return await _call_gemini(
+                [{"text": f"{system}\n\n{prompt}"}]
+            )
+        raise ValueError(f"Unknown provider '{provider}'")
 
     # Default: chat
     if provider == "openai":

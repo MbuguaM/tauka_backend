@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.followup import run_followup
 from app.dependencies import get_current_user
 from app.models.schemas import AIRequest
+from app.services.ai_prompts import FRAMED_MODES, build_framed_prompt
 from app.services.ai_services import call_ai
 from app.services.token_service import count_tokens
 from app.services.rate_limit_service import check_rate_limit, get_rate_limit_status
@@ -50,7 +51,24 @@ async def generate(
         raise HTTPException(status_code=422, detail="image_url is required for image_translation mode")
 
     model = _PROVIDER_MODEL.get(req.provider, "deepseek-chat")
-    estimated = count_tokens(req.prompt, model=model) + 500
+
+    # Framed modes: the instructions are built here, not accepted from the
+    # client, and the client's text is fenced inside them. See ai_prompts.
+    system_prompt: str | None = None
+    user_prompt = req.prompt
+    if req.mode in FRAMED_MODES:
+        system_prompt, user_prompt = build_framed_prompt(
+            req.mode,
+            req.prompt,
+            passage=req.passage,
+            context=req.context,
+        )
+
+    # Bill what is actually sent. Counting req.prompt alone would have let the
+    # framed modes — which add a system prompt and can carry a whole passage —
+    # spend several times the tokens they were charged for.
+    billable = f"{system_prompt or ''}{user_prompt}"
+    estimated = count_tokens(billable, model=model) + 500
 
     allowed, reason = check_rate_limit(
         user_id,
@@ -63,11 +81,12 @@ async def generate(
 
     try:
         response = await call_ai(
-            prompt=req.prompt,
+            prompt=user_prompt,
             provider=req.provider,
             mode=req.mode,
             target_language=req.target_language,
             image_url=req.image_url,
+            system=system_prompt,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -95,7 +114,7 @@ async def generate(
             detail=f"AI provider '{req.provider}' is unreachable.",
         )
 
-    actual = count_tokens(req.prompt, model=model) + count_tokens(response, model=model)
+    actual = count_tokens(billable, model=model) + count_tokens(response, model=model)
     # Inline: usage feeds the daily/monthly token caps, so losing these writes
     # silently raises every user's effective limit. One insert against Supabase.
     await run_followup(

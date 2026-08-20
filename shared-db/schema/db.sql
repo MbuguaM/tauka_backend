@@ -164,13 +164,15 @@ CREATE TABLE app.student_course (
 );
 
 -- [DOMAIN: Student & Tutor Identity] [OWNER: tauka-flutter] [SPEC: §6 Tutor]
--- PURPOSE: Tutors can be associated with courses. NOTE: column named student_id stores tutor id (historical bug).
--- SEE: CONFLICT_LOG.md CONFLICT-012 — rename student_id → tutor_id is pending.
+-- PURPOSE: Tutors can be associated with courses.
+-- SEE: CONFLICT_LOG.md CONFLICT-012 — RESOLVED 2026-08-19; the old, misleadingly
+--      named `student_id` column is now `tutor_id` (Amendment A2, applied in prod).
+--      The FK constraint still carries its historical name, tutor_course_student_id_fkey.
 CREATE TABLE app.tutor_course (
-  student_id     uuid REFERENCES app.tutor(id)  ON DELETE CASCADE,  -- misleading: stores tutor id
-  course_id      uuid REFERENCES app.course(id) ON DELETE CASCADE,
+  tutor_id       uuid NOT NULL REFERENCES app.tutor(id)  ON DELETE CASCADE,
+  course_id      uuid NOT NULL REFERENCES app.course(id) ON DELETE CASCADE,
   student_rating bigint,
-  PRIMARY KEY (student_id, course_id)
+  PRIMARY KEY (tutor_id, course_id)
 );
 
 -- [DOMAIN: Student & Tutor Identity] [OWNER: tauka-flutter] [SPEC: §6.2 Tutor Assignment]
