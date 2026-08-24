@@ -75,6 +75,7 @@ async def run_daily_tasks(authorization: str | None = Header(default=None)):
     """
     _authorise(authorization)
 
+    from app.tasks.activity_retention import run_activity_retention_task
     from app.tasks.gift_lifecycle import run_gift_lifecycle
     from app.tasks.milestone_check import run_milestone_check
     from app.tasks.testimonial_outreach import run_testimonial_outreach
@@ -83,6 +84,10 @@ async def run_daily_tasks(authorization: str | None = Header(default=None)):
         ("gift_lifecycle", run_gift_lifecycle),
         ("milestone_check", run_milestone_check),
         ("testimonial_outreach", run_testimonial_outreach),
+        # Last on purpose: it is the only job here that deletes anything, and
+        # nothing else depends on it having run. A day late costs storage; a
+        # mail job skipped because deletion threw costs a person their email.
+        ("activity_retention", run_activity_retention_task),
     )
 
     results: dict[str, str] = {}

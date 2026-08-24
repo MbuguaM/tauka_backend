@@ -25,9 +25,21 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
 
     # ── Video calling ─────────────────────────────────────────────────────────
+    #
+    # FIELD NAMES MUST MATCH THE .env KEYS EXACTLY. pydantic-settings maps a
+    # field to the upper-cased field name, and `extra="ignore"` means a mismatch
+    # is SILENT: the field keeps its "" default and nothing complains.
+    #
+    # That had already happened. `.env` carries LIVEKIT_API_SECRET and
+    # LIVEKIT_URL; this block declared `livekit_secret` (→ LIVEKIT_SECRET) and no
+    # url field at all, so two of the four credentials never loaded. The empty
+    # secret does not raise either — `jwt.encode(payload, "")` happily signs with
+    # an empty key and LiveKit rejects the result at connect time, a long way
+    # from the cause.
     daily_api_key: str = ""
+    livekit_url: str = ""
     livekit_api_key: str = ""
-    livekit_secret: str = ""
+    livekit_api_secret: str = ""
 
     # ── Stripe ────────────────────────────────────────────────────────────────
     stripe_secret_key: str = ""
@@ -239,7 +251,11 @@ class Settings(BaseSettings):
 
     @property
     def LIVEKIT_SECRET(self) -> str:
-        return self.livekit_secret
+        return self.livekit_api_secret
+
+    @property
+    def LIVEKIT_URL(self) -> str:
+        return self.livekit_url
 
     # Alias for service role key (spec uses supabase_service_key)
     @property

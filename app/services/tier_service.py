@@ -4,7 +4,15 @@ from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 
-TIER_RANK = {"free": 0, "learner": 1, "tutor": 2, "intensive": 3}
+# Tier values carry an explicit `_tier` suffix so they cannot be confused with
+# ROLES, where "tutor" also lives (app.user_profiles.user_type). Renamed
+# 2026-08-24, migration §64; supersedes CONFLICT-003, which banned the string
+# "tutor_tier" while solving a different problem — see that entry.
+#
+# These four strings must match app.student.tier's CHECK constraint exactly. A
+# mismatch here does not fail loudly: the webhook writes, Postgres rejects, and
+# a paying customer silently keeps their old tier.
+TIER_RANK = {"free_tier": 0, "learner_tier": 1, "tutor_tier": 2, "intensive_tier": 3}
 
 
 async def change_tier(
@@ -30,7 +38,7 @@ async def change_tier(
             "tier_source": source,
         }).execute()
         logger.info("Created student profile %s with tier %s", student_id, new_tier)
-        return {"previous_tier": "free", "new_tier": new_tier, "source": source}
+        return {"previous_tier": "free_tier", "new_tier": new_tier, "source": source}
 
     profile = result.data[0]
     previous_tier = profile["tier"]
@@ -80,9 +88,9 @@ async def restore_original_tier(student_id: str) -> dict:
     ).eq("id", student_id).execute()
 
     if not result.data:
-        return {"previous_tier": "free", "new_tier": "free", "source": "self"}
+        return {"previous_tier": "free_tier", "new_tier": "free_tier", "source": "self"}
 
     profile = result.data[0]
-    restore_to = profile.get("original_tier") or "free"
+    restore_to = profile.get("original_tier") or "free_tier"
 
     return await change_tier(student_id, restore_to, "self")

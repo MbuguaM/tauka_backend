@@ -46,9 +46,17 @@ def get_active_vendor() -> str:
 
 async def generate_daily_token(user_id: str, room: str) -> dict:
     """
-    Creates a Daily.co room (idempotent) and returns a meeting token.
+    Creates a Daily.co room and returns a meeting token.
 
     Returns dict with keys: token, room_url, vendor
+
+    UNVERIFIED ASSUMPTION, flagged 2026-08-24: the original docstring claimed
+    "Daily returns the existing room if name already exists". That has not been
+    checked against Daily's API, and `raise_for_status()` below means that if
+    Daily instead returns 400 for a duplicate name, **the second person to join
+    any session fails** while the first succeeds — an intermittent bug that would
+    look like a network problem. Verify before the first real cohort session; if
+    the API does 400, catch it and GET the existing room instead.
     """
     headers = {
         "Authorization": f"Bearer {settings.DAILY_API_KEY}",
@@ -95,6 +103,17 @@ def generate_livekit_token(user_id: str, room: str) -> dict:
 
     Returns dict with keys: token, room_url (None for LiveKit), vendor
     """
+    # Fail loudly on a missing secret. `jwt.encode(payload, "")` does NOT raise —
+    # it signs with an empty key and returns a perfectly well-formed token that
+    # LiveKit rejects at connect time, a long way from the cause. Until
+    # 2026-08-24 this was the live behaviour, because the settings field was
+    # named `livekit_secret` while .env carries LIVEKIT_API_SECRET.
+    if not settings.LIVEKIT_SECRET or not settings.LIVEKIT_API_KEY:
+        raise RuntimeError(
+            "LiveKit is not configured: LIVEKIT_API_KEY and LIVEKIT_API_SECRET "
+            "must both be set. Refusing to mint an unsignable token."
+        )
+
     now = int(time.time())
     payload = {
         "iss": settings.LIVEKIT_API_KEY,
@@ -111,7 +130,15 @@ def generate_livekit_token(user_id: str, room: str) -> dict:
         },
     }
     token = jwt.encode(payload, settings.LIVEKIT_SECRET, algorithm="HS256")
-    return {"token": token, "room_url": None, "vendor": "livekit"}
+
+    # `room_url` was None, which made the token useless on its own: a LiveKit
+    # client needs the signalling websocket URL as well as the token, and unlike
+    # Daily there is no API call that hands it back. It comes from config.
+    return {
+        "token": token,
+        "room_url": settings.LIVEKIT_URL or None,
+        "vendor": "livekit",
+    }
 
 
 # ---------------------------------------------------------------------------

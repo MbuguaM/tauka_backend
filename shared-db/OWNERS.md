@@ -38,6 +38,11 @@
 | student | tauka-flutter (schema); tauka-python (tier/stripe cols) | student_tutor | SHARED WRITE — see Shared-Write Tables below |
 | tutor | tauka-flutter | student_tutor | tauka-python reads for rate calculation |
 | student_course | tauka-flutter | student_tutor | tauka-flutter only |
+| activity_file | tauka-flutter | activity | **SHARED-WRITE (narrow).** tauka-flutter owns the DDL and writes its own rows. Catalogue of the JSONL chunks in the `activity` bucket. SELECT via `app.can_read_activity()` (self, or an assigned tutor when the student is on tutor/intensive tier); client writes are own-rows-only. **tauka-python may DELETE rows whose `covers_to` is past the 90-day retention window, via service role, and nothing else** — no INSERT, no UPDATE, no DDL. Added 2026-08-23, phase 12; see CONFLICT-029 |
+| activity_summary | tauka-flutter | activity | tauka-flutter only. One denormalised row per student, **written by the client**, so a tutor dashboard is an indexed query rather than a bucket download. Same SELECT rule |
+| *(Storage)* `activity` bucket | tauka-flutter | activity | `activity/<userId>/<deviceId>/<chunk>.jsonl`. Storage policies call the **same** `app.can_read_activity()` — a table's RLS does not protect a file. **tauka-python deletes expired and orphaned objects** through the Storage API on the nightly job (a SQL delete on `storage.objects` orphans the blob rather than removing it) |
+| ~~activity_event~~ | — | activity | **DROPPED 2026-08-23**, superseded by files |
+| ~~activity_daily~~ | — | activity | **DROPPED 2026-08-23**, superseded by files |
 | tutor_course | tauka-flutter | student_tutor | tauka-flutter only |
 | course_highlight | tauka-flutter | course_content | tauka-flutter only (RLS: owner only) |
 | tutor_assignment | tauka-flutter | student_tutor | tauka-python reads for cohort tutor–student mapping |
@@ -80,6 +85,7 @@
 | ai_conversation | tauka-flutter | ai | tauka-flutter only |
 | ai_message | tauka-flutter | ai | tauka-flutter only |
 | message_analysis | tauka-flutter | ai | tauka-flutter only — INSERT only, never UPDATE or DELETE (write-once by design) |
+| ai_usage | tauka-flutter (DDL) | ai | **SHARED-WRITE. tauka-python is the SOLE writer** — one INSERT per AI call via service role, from what the provider reported. tauka-flutter owns the DDL and never writes it. The `app.student.tier` pattern. Clients get SELECT on their own rows and **no INSERT policy at all** — a self-reported spend ledger reports whatever the client likes. No UPDATE, no DELETE, for anyone. Added 2026-08-23, phase 9; see CONFLICT-030 |
 | ai_practice_session | tauka-flutter | ai | tauka-flutter only |
 | ai_practice_turn | tauka-flutter | ai | tauka-flutter only |
 | exercise_result | tauka-flutter | exercises_progress | tauka-flutter only |

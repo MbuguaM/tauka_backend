@@ -67,7 +67,7 @@ async def subscription_status(user_id: str = Depends(get_current_user)):
 
     if not result.data:
         return SubscriptionStatusResponse(
-            tier="free",
+            tier="free_tier",
             source="self",
             status="none",
             current_period_end=None,
@@ -97,7 +97,7 @@ async def subscription_status(user_id: str = Depends(get_current_user)):
             }
 
     return SubscriptionStatusResponse(
-        tier=profile.get("tier", "free"),
+        tier=profile.get("tier", "free_tier"),
         source=profile.get("tier_source", "self"),
         status=profile.get("subscription_status", "none"),
         current_period_end=profile.get("current_period_end"),

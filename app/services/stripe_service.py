@@ -7,10 +7,12 @@ logger = logging.getLogger(__name__)
 
 stripe.api_key = settings.stripe_secret_key
 
+# Keys are tier values as stored in app.student.tier — suffixed `_tier` since
+# 2026-08-24 (migration §64) to keep them disjoint from role names.
 _PRICE_MAP = {
-    "learner": settings.stripe_price_learner_monthly,
-    "tutor": settings.stripe_price_tutor_monthly,
-    "intensive": settings.stripe_price_intensive_monthly,
+    "learner_tier": settings.stripe_price_learner_monthly,
+    "tutor_tier": settings.stripe_price_tutor_monthly,
+    "intensive_tier": settings.stripe_price_intensive_monthly,
 }
 
 
@@ -198,11 +200,11 @@ async def _handle_subscription_update(subscription: dict) -> None:
         price_id = items[0].get("price", {}).get("id", "")
         tier = None
         if price_id == settings.stripe_price_learner_monthly:
-            tier = "learner"
+            tier = "learner_tier"
         elif price_id == settings.stripe_price_tutor_monthly:
-            tier = "tutor"
+            tier = "tutor_tier"
         elif price_id == settings.stripe_price_intensive_monthly:
-            tier = "intensive"
+            tier = "intensive_tier"
         if tier:
             await change_tier(student_id, tier, "self")
 
@@ -225,7 +227,7 @@ async def _handle_subscription_cancel(subscription: dict) -> None:
         "stripe_subscription_id": None,
     }).eq("id", student_id).execute()
 
-    await change_tier(student_id, "free", "self")
+    await change_tier(student_id, "free_tier", "self")
 
 
 async def _handle_payment_failed(invoice: dict) -> None:

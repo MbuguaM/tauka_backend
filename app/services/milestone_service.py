@@ -255,7 +255,7 @@ def should_include_gift_nudge(supporter: dict, student: dict, milestone_type: st
         return False
     if (supporter.get("engagement_score") or 0) < 3:
         return False
-    if student.get("tier", "free") != "free":
+    if student.get("tier", "free_tier") != "free_tier":
         return False
 
     if supporter.get("gift_nudge_shown"):

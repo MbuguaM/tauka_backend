@@ -6,7 +6,8 @@ from app.core.followup import run_followup
 from app.dependencies import get_current_user
 from app.models.schemas import AIRequest
 from app.services.ai_prompts import FRAMED_MODES, build_framed_prompt
-from app.services.ai_services import call_ai
+from app.services.ai_services import call_ai, take_last_usage
+from app.services.ai_usage_service import log_ai_usage
 from app.services.token_service import count_tokens
 from app.services.rate_limit_service import check_rate_limit, get_rate_limit_status
 from app.services.usage_service import log_usage
@@ -114,12 +115,37 @@ async def generate(
             detail=f"AI provider '{req.provider}' is unreachable.",
         )
 
+    # Taken here, immediately, while it is still this call's value. It is None
+    # whenever the provider did not report usage — including every path where
+    # call_ai is stubbed — and the ledger row then says `source='estimate'`
+    # rather than passing a local count off as a measurement.
+    usage = take_last_usage()
+
     actual = count_tokens(billable, model=model) + count_tokens(response, model=model)
     # Inline: usage feeds the daily/monthly token caps, so losing these writes
     # silently raises every user's effective limit. One insert against Supabase.
     await run_followup(
         log_usage(user_id, f"ai_tokens:{req.provider}:{req.mode}", actual),
         label=f"log_usage {user_id} {req.provider}",
+    )
+
+    # The durable ledger (phase 9). Read the provider's own count BEFORE the
+    # followup above can start another call in this context — take_last_usage()
+    # consumes, so reading it late risks reading nothing.
+    #
+    # Deliberately AFTER a successful response: a call that raised charged the
+    # student nothing and must not appear in their usage. `actual` is only the
+    # fallback, and a row built from it says so.
+    await run_followup(
+        log_ai_usage(
+            user_id=user_id,
+            provider=req.provider,
+            mode=req.mode,
+            usage=usage,
+            estimated_total=actual,
+            model=model,
+        ),
+        label=f"log_ai_usage {user_id} {req.provider}",
     )
 
     return {"response": response, "tokens": actual, "provider": req.provider, "mode": req.mode}

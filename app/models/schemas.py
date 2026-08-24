@@ -63,7 +63,7 @@ class CallRequest(BaseModel):
 # ── Segment A — Subscriptions ──────────────────────────────────────────────────
 
 class SubscriptionCheckoutRequest(BaseModel):
-    tier: Literal["learner", "tutor", "intensive"]
+    tier: Literal["learner_tier", "tutor_tier", "intensive_tier"]
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
 
@@ -218,7 +218,7 @@ class SentReferralItem(BaseModel):
 # ── Account Portal ─────────────────────────────────────────────────────────────
 
 class ChangeSubscriptionRequest(BaseModel):
-    new_tier: Literal["free", "learner", "tutor", "intensive"]
+    new_tier: Literal["free_tier", "learner_tier", "tutor_tier", "intensive_tier"]
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
 

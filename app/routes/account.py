@@ -39,7 +39,7 @@ async def cancel_subscription(user_id: str = Depends(get_current_user)):
     """Cancel subscription at end of current billing period."""
     try:
         result = await account_service.change_subscription(
-            user_id, "free", None, None
+            user_id, "free_tier", None, None
         )
         return result
     except ValueError as exc:

@@ -68,7 +68,7 @@ async def create_gift_checkout(
         "supporter_id": supporter_id,
         "student_id": student_id,
         "stripe_payment_id": checkout["session_id"],
-        "tier": "tutor",
+        "tier": "tutor_tier",
         "duration_months": duration_months,
         "amount_cents": amount_cents,
         "anonymous": anonymous,
@@ -127,7 +127,7 @@ async def activate_gift(stripe_session_id: str) -> dict:
     }).eq("id", gift["id"]).execute()
 
     await change_tier(
-        student_id, "tutor", "gifted",
+        student_id, "tutor_tier", "gifted",
         gift_id=gift["id"],
         preserve_original=True,
     )

@@ -319,7 +319,15 @@ If you discover a duplicated table, mismatched column type, missing table, or a 
 - Foreign key columns: `[table]_id` (e.g., `student_id`, `supporter_id`)
 - Enum columns use `TEXT + CHECK` constraints, not PostgreSQL `ENUM` types
 - All tables live in the `app` schema — never `public`
-- `subscription_tier` canonical values: `free | learner | tutor | intensive` — never `tutor_tier`
+- `subscription_tier` canonical values: **`free_tier | learner_tier | tutor_tier | intensive_tier`**
+  (renamed 2026-08-24, migration §64 — supersedes CONFLICT-003). The `_tier` suffix
+  keeps tiers disjoint from **roles**, where `tutor` also lives.
+  **This project is the one that can break billing with a mismatch:** it writes
+  `app.student.tier` from Stripe webhooks via the service role, which bypasses RLS
+  but *not* CHECK constraints. A stale literal here does not fail loudly — the
+  webhook writes, Postgres rejects, and a paying customer silently keeps their old
+  tier. `TIER_RANK`, `_PRICE_MAP` and the price-id branches in `stripe_service.py`
+  must all use the suffixed values.
 - The test/referral share flow supports exactly two channels: `whatsapp` and `copy_link` — `email` channel was removed
 
 ## Testing Requirements

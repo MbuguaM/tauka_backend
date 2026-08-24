@@ -18,8 +18,8 @@
 > when `CONFLICT-013` and `CONFLICT-014` were each in use twice. The older,
 > resolved entry of each pair was renumbered — `playlist_id` 013 → **024**,
 > `dict_url` 014 → **025** — and both carry a "formerly" line so an older
-> reference still resolves. **The next free number is 026.**
-> Last updated by: root on 2026-08-20
+> reference still resolves. **The next free number is 037.**
+> Last updated by: tauka-flutter on 2026-08-24
 
 ---
 
@@ -33,7 +33,469 @@ When you discover a duplicate table, mismatched column type, missing table, brok
 
 ---
 
+### CONFLICT-036: `app.tier_gating_rules` has no reader, its documented columns do not exist, and three of its rows encode a role as a tier
+- **Detected by:** tauka-flutter (tier audit following the specs.md amendment)
+- **Date:** 2026-08-24
+- **Status:** OPEN — nothing is broken today *because* the table is unread; that is also the problem
+- **Type:** DEAD_CONFIG + DOC_INTEGRITY + LATENT_PRIVILEGE_ESCALATION
+
+**1. No reader.** `SupabaseService.getTierGatingRules()` exists and has **zero
+callers**. Every gating decision in the app comes from three hardcoded Dart
+consts in `tierGatingService.dart` — `_tierFeatures`, `_tutorFeatures`,
+`_adminFeatures`. **Editing a row in this table changes nothing.** The
+"config-driven gating" described across the docs is not what runs.
+
+**2. The documented columns are wrong.**
+`shared-features/contracts/api-boundaries.md` lists
+`feature_name, min_tier, is_role_gated, roles`. The table actually has
+`feature, min_tier, description, updated_at` — **three of four documented names
+do not exist**, including both columns that would implement role gating. A
+reader written from the contract would fail on its first select.
+
+**3. Three rows put a role requirement in a tier column** — and this is the one
+that would bite:
+
+| feature | min_tier | description says |
+|---|---|---|
+| `cohort_management` | **tutor** | "Admin: manage cohorts, students, and payroll" |
+| `admin_dashboard` | **tutor** | "admin role required **in addition to** tier" |
+| `content_creation` | **tutor** | "tutors and admins" |
+
+`tutor` is a **subscription tier** in the canonical set
+`free | learner | tutor | intensive`, and it is also the name of a **role**. Under
+any ordinary rank comparison (`user_tier >= min_tier`), a **paying `tutor`-tier
+student** — and every `intensive` student — satisfies `min_tier = 'tutor'` and
+would be granted cohort management, the admin dashboard and content creation.
+
+The description column *says* a role is also required. Nothing enforces that,
+because there is no `is_role_gated` column and no reader.
+
+**So the safety here is accidental.** The Dart code is correct — it branches on
+`_role == 'tutor'` before consulting tier maps — but it is correct by not using
+this table. **Anyone who "fixes" the missing reader by wiring
+`getTierGatingRules()` to a rank comparison introduces a privilege escalation in
+the same commit.** That is the trap this entry exists to prevent.
+
+**4. Wrong feature gated.** `language_exchange_page.dart:174` gates its Connect
+button on `TaukaFeature.oneOnOneSessions` — an Intensive-only paid feature — while
+this table says `language_exchange` is `min_tier = free`. The Dart wins (the table
+is unread), so language exchange is **Intensive-only in practice and documented as
+free for everyone**. Moot in effect only because the feature is non-functional for
+other reasons (FL-010: no Edge Function, and the fallback queries columns that do
+not exist).
+
+**5. `groupSessions` is not in the `learner` tier map**, but the adopted pricing
+gives Learner one group cohort session per month
+(`tutor-cohort-matching-plan.md` §1b.2). It must be added when the cohort system
+is built. **Not changed now**: it gates nothing today (`groupSessions` and
+`cohortChat` have no consumers at all), and enabling access to a path that does
+not exist would be worse than leaving it.
+
+**What was verified good:** every `min_tier` value in the table is canonical —
+`free`, `learner`, `tutor`, `intensive`. **No `tutor_tier` anywhere** (CONFLICT-003
+clean), and the Dart map keys match.
+
+**Resolution path — in this order:**
+1. Decide whether this table is authoritative or should be dropped. A config table
+   nothing reads is worse than no table: it invites edits that appear to work.
+2. If authoritative: add `is_role_gated`/`roles` (or split role features out
+   entirely), **fix the three role-as-tier rows first**, then write the reader.
+   Never the reader first.
+3. Correct `api-boundaries.md`'s column list either way.
+4. Fix the `language_exchange` gate to match whichever source wins.
+
+---
+
+### CONFLICT-035: `cohort_assignments` RLS compares a column to itself, so any cohort member can read every cohort's assignments
+- **Detected by:** tauka-flutter (tutor-cohort plan, §5.0 ownership check)
+- **Date:** 2026-08-24
+- **Status:** OPEN — **fix before the first cohort_assignments row is written**
+- **Type:** RLS_DEFECT (security)
+- **Details:** `cohort_assignments_select_member_or_tutor_admin` reads:
+
+  ```sql
+  app.is_tutor() OR app.is_admin() OR EXISTS (
+    SELECT 1 FROM app.cohort_memberships cm
+     WHERE cm.cohort_id = cm.cohort_id      -- ← compares the column to itself
+       AND cm.user_id   = auth.uid())
+  ```
+
+  `cm.cohort_id = cm.cohort_id` is a tautology. The correlation to the outer row
+  — `cm.cohort_id = cohort_assignments.cohort_id` — was never written, so the
+  membership branch collapses to **"is the caller a member of any cohort at
+  all"**. Any student in any cohort can therefore read **every** cohort's
+  assignments platform-wide: which decks and content were assigned to which
+  group, and by whom.
+
+  The alias makes it invisible on a quick read — `cm.cohort_id = cm.cohort_id`
+  looks like a join condition and is shaped like one.
+
+  **Nothing has leaked: the table holds 0 rows** and no cohort has ever formed.
+  This is a pre-launch find, which is the only good time to find it.
+
+  Also noted while here, not a defect but worth a decision: `cohorts_select_all_auth`
+  is `USING (true)` — every authenticated user reads every cohort row. Defensible
+  for `(name, description, tutor_id, dates)`; less so once the tutor-cohort plan
+  adds level, weekly slot and timezone, which turns it into a browsable directory
+  of who teaches what and when. Same concern that made `user_profiles` "not a user
+  directory".
+- **Fix:**
+
+  ```sql
+  CREATE POLICY cohort_assignments_select_member_or_tutor_admin
+    ON app.cohort_assignments FOR SELECT USING (
+      app.is_tutor() OR app.is_admin() OR EXISTS (
+        SELECT 1 FROM app.cohort_memberships cm
+         WHERE cm.cohort_id = cohort_assignments.cohort_id
+           AND cm.user_id   = auth.uid()));
+  ```
+
+  **Land it on its own, not inside a feature migration.** A security fix buried in
+  a schema change is a security fix nobody reviews.
+- **Lesson worth keeping:** this is the third defect in this codebase that no test
+  and no analyser could see — after the table names in string literals (FL-010)
+  and the doc claims that outlived their code. **RLS predicates are code that only
+  the database executes**, and the only way to check one is to read it or probe it
+  with a real JWT. The activity domain's policies were probed that way in phase 12
+  and were correct; these never were.
+
+---
+
+### CONFLICT-034: the tutor dashboard's entire data layer queried tables that do not exist
+- **Detected by:** tauka-flutter (while giving `app.activity_summary` its first reader)
+- **Date:** 2026-08-24
+- **Status:** RESOLVED for the tutor-dashboard path (2026-08-24); **OPEN** for the
+  other call sites listed below
+- **Type:** MISSING_TABLE
+- **Details:** Every query behind `TutorDashboardPage` named a table that has
+  never existed in this database. Verified against `information_schema` on the
+  live project, not inferred:
+
+  | Queried | Exists? | Canonical |
+  |---|---|---|
+  | `public.tutor_assignments` | no | `app.tutor_assignment` |
+  | `public.profiles` | no | `app.user_profiles` |
+  | `app.exercise_sessions` | no | `app.exercise_result` (CONFLICT-002) |
+  | `public.video_sessions` | no | `app.video_session` |
+  | `public.video_session_participants` | no | `app.video_session_participant` |
+
+  Two separate faults stacked: plural table names (against the singular
+  snake_case convention) **and** a missing `.schema('app')`, which sends the
+  unqualified ones to `public`. The client's default schema is `public` —
+  `Supabase.initialize` in `main.dart` sets no `postgrestOptions`.
+
+  The dashboard therefore has never worked. It rendered its loading state, threw
+  on the first query, and showed "Failed to load data" — which reads as a
+  transient network problem, which is why it survived.
+
+  **A deeper fault than a rename:** `app.tutor_assignment` has **no
+  `student_id` column**. A tutor is assigned to a *course*; the students are
+  whoever is enrolled in it. `getStudentsByTutor` and `getRecentExerciseResults`
+  both selected `student_id` off it, so no renaming would have fixed them — the
+  roster is a two-hop join through `app.student_course`. This is the same shape
+  as `app.can_read_activity()` and as the `user_profiles_select_tutor_assigned`
+  RLS policy, and it is the join the code now uses.
+- **Resolution (dashboard path):** `getStudentsByTutor`,
+  `getRecentExerciseResults`, `getRecentExerciseResultsForStudent`,
+  `getVideoSessions` and `createVideoSession` rewritten against the canonical
+  tables, with the roster expressed as the course join.
+- **Still open — NOT fixed here, because each needs a decision rather than a
+  rename:**
+  - `createExerciseSession` / `completeExerciseSession`
+    (`exercise_session.dart:136`, `:199`) write `app.exercise_sessions` in two
+    phases — insert on start, update on finish. `app.exercise_result` is a
+    single row with `exercise_type`, `difficulty_mode`, `score` and `total` all
+    NOT NULL, so the two-phase shape does not fit it and a straight rename would
+    fail the NOT NULL checks. **Exercise results have never reached the server**;
+    this is why the dashboard's results feed will stay empty even now that it
+    queries the right table.
+  - `joinVideoSession` / `leaveVideoSession` target
+    `video_session_participants` with `user_id`, `joined_at` and `left_at`.
+    `app.video_session_participant` is `(session_id, student_id)` and has none
+    of those three columns. Recording join/leave times needs a schema change,
+    which needs the DB change workflow.
+  - `submitExerciseResult` writes `app.exercise_sessions` and has **zero
+    callers** — dead code that should probably be deleted rather than repaired.
+  - Eight further `public.profiles` reads across admin and messaging paths.
+
+  Tracked in `issues.md` as **FL-010**.
+
+---
+
+### CONFLICT-033: two different definitions of "my student" are enforced in one schema
+- **Detected by:** tauka-flutter (tutor dashboard activity reader)
+- **Date:** 2026-08-24
+- **Status:** OPEN — logged, worked around, not resolved
+- **Type:** IMPLICIT_CONTRACT
+- **Details:** The RLS policies disagree about what makes a student *this
+  tutor's* student, and the disagreement is invisible until a tutor sees a
+  half-populated dashboard.
+
+  | Table | Policy | "My student" means |
+  |---|---|---|
+  | `app.user_profiles` | `user_profiles_select_tutor_assigned` | enrolled in a course I am assigned to |
+  | `app.student` | `student_select_tutor_assigned` | enrolled in a course I am assigned to |
+  | `app.student_course` | `student_course_select_tutor_assigned` | a course I am assigned to |
+  | `app.activity_summary` | `app.can_read_activity()` | enrolled in a course I am assigned to **and** on the tutor/intensive tier |
+  | **`app.exercise_result`** | `er_select_own_or_tutor_admin` | **`app.student.tutor_id = auth.uid()`** — a direct link, no course involved |
+
+  Four of the five key on the course join. `exercise_result` alone keys on
+  `app.student.tutor_id`, a column set by a different mechanism entirely. The
+  two sets are not the same and neither contains the other: a tutor assigned to
+  a course can read a student's profile, tier and activity summary but **not
+  their exercise results**, unless that student also happens to carry their id
+  in `student.tutor_id`.
+
+  So the dashboard can legitimately show a roster of eight students and a
+  results feed covering three of them, with nothing wrong in the client.
+- **Workaround:** the roster uses the course join (the majority rule, and the
+  one `can_read_activity()` uses). `getRecentExerciseResults` queries by that
+  roster and lets RLS drop what it drops, with a comment saying so. Do **not**
+  "fix" the shortfall by widening the query — the filter is the policy.
+- **Needs a decision:** which definition is canonical. Aligning
+  `exercise_result` to the course join is the smaller change and matches the
+  other four, but `student.tutor_id` may be deliberate for one-to-one tutoring
+  that has no course. This is a schema decision for the developer, not a client
+  workaround.
+
+---
+
 ## Active Conflicts
+
+### CONFLICT-032: `learn_streak_days` has no writer at all, and `streak_days` is still the old incrementing counter — both were documented as client-derived
+- **Detected by:** tauka-flutter (phase 13 documentation audit, verified against the live database)
+- **Date:** 2026-08-23
+- **Type:** DOC_DRIFT + DEAD_COLUMN + DUAL_WRITER
+- **Status:** **RESOLVED 2026-08-23 — developer chose option 1 (point the readers at the derived pair).** Client code landed, migration applied and probed. See Resolution.
+
+**What the docs said.** `tauka/shared-db/domains/activity.md` §4 and
+`identity_access.md` both stated that `user_profiles.streak_days` and
+`learn_streak_days` are "now **written by the client**" following the switch from
+rows to files.
+
+**What is actually true**, checked in code and against the live database:
+
+| Column | Written by | Reality |
+|---|---|---|
+| `user_profiles.streak_days` | `app.update_user_streak(uuid)`, called from `mainProgressManager.dart:704` on session end | **Still the old INCREMENTING counter.** Not derived. Never changed |
+| `user_profiles.learn_streak_days` | **nothing, anywhere** | Its only writer, `app.refresh_activity_streaks()`, was dropped with the row design. `grep` finds no writer in any of the three projects. **Permanently 0** |
+| `activity_summary.app_streak` / `learn_streak` | the client, in `ActivityUploader.publishSummary()` | The genuinely derived pair — and **nothing reads them** |
+
+So the derived streaks exist and are unread; the read streak is undermined; and
+the second read streak is dead. `achievementService` reads `streak_days`, i.e.
+the counter, which is what it always read.
+
+**The `streak-reset` cron is not the problem.** It is still scheduled
+(`0 3 * * *`, zeroing `streak_days` where `last_active_date < CURRENT_DATE - 1`)
+and it is *coherent* with `update_user_streak` — both key on `last_active_date`,
+which the RPC maintains. The pair works as it always did. It is only the
+documentation that moved.
+
+**Why this is not a silent fix.** Which streak wins is a product decision with
+two defensible answers:
+
+1. **Point the readers at the derived pair.** Consistent with the plan's own rule
+   that counts are derived and never incremented. Costs: `publishSummary()` also
+   writes `user_profiles`, the RPC and the cron are retired, and
+   `achievementService` keeps reading the same column with a new meaning.
+2. **Keep the counter and delete `learn_streak_days`.** The counter works, is
+   shipped, and nothing has complained. Costs: the plan's "derived, never
+   incremented" invariant does not hold for the streak a user actually sees, and
+   that should be written down rather than left implied.
+
+### Resolution (2026-08-23) — option 1
+
+`ActivityUploader.publishSummary()` now writes **both** `streak_days` and
+`learn_streak_days` onto the caller's own `user_profiles` row, from the same
+derived pair the summary carries. Every existing reader — `achievementService`,
+the `idx_user_profiles_streak` leaderboard index, whatever the tutor dashboard
+becomes — gets the derived value with no change at the call site, and
+`learn_streak_days` comes alive.
+
+Retired in the same change, because a counter and a derived value writing one
+column fight and the counter is the half that cannot be audited:
+
+| Retired | Where |
+|---|---|
+| `SupabaseService.updateStreak()` call | `mainProgressManager.dart:704` — removed |
+| `SupabaseService.updateStreak()` method | removed, with a do-not-reinstate note |
+| `app.update_user_streak(uuid)` | **dropped** — migration `streaks_derived_not_incremented` |
+| `streak-reset` cron | **unscheduled** — same migration |
+
+**The cron is the dangerous half, and the ordering matters.** With the RPC gone
+nothing maintains `last_active_date`, so it goes stale for every active user —
+and the cron would then zero a **correct** derived streak every night at 03:00
+UTC. It was not firing at the time only because every `last_active_date` was NULL and
+`NULL < CURRENT_DATE - 1` is NULL, so no row matched — luck, not design. **Applied
+2026-08-23**, and verified after: the cron is gone (1 → 0), the RPC is gone, no
+cron mentions streaks, and `add_user_xp` / `weekly-xp-reset` survive untouched
+because XP genuinely is an accumulator.
+
+The client's new write path was **probed as `authenticated`** rather than
+inferred from `user_profiles_update_own` and the privilege-guard trigger:
+
+| Probe | Result |
+|---|---|
+| client updates **its own** `streak_days` + `learn_streak_days` | changed 1 row; values persisted |
+| client updates **another user's** `streak_days` | changed **0** rows |
+
+Probe values reset to zero afterwards.
+
+Checked before dropping: **no other database object calls `update_user_streak`**
+(0 functions, 0 triggers), and `streak-reset` is the only cron mentioning
+streaks.
+
+`last_active_date` is now legacy and nothing writes it; the live answer is
+`app.activity_summary.last_active_on`.
+
+- **The invariant this restores:** every count in this system is derived from
+  events and none is incremented. It now holds for the streak a user actually
+  sees, which was the one place it did not.
+- **Related:** CONFLICT-005 (the two pre-existing streak columns, resolved
+  by design) and CONFLICT-031 (the same column's documentation naming a dropped
+  function — that entry corrected the *writer*; this one is the larger finding
+  behind it).
+
+---
+
+### CONFLICT-030: SCHEMA_REQUEST — `app.ai_usage` sits in tauka-flutter's domain and only tauka-python can write it
+- **Detected by:** tauka-flutter (phase 9 of `activity-telemetry-plan.md`)
+- **Date:** 2026-08-23
+- **Type:** SCHEMA_REQUEST + CROSS_PROJECT_WRITE
+- **Status:** RESOLVED 2026-08-23 — decided, built, applied and probed. The arrangement below stands as the thing to keep honouring.
+
+**The problem, as §10 of the plan framed it.** The `ai` domain is tauka-flutter's.
+But the number this table exists to hold — what the model actually charged — is
+only ever seen by tauka-python, which is the only project that talks to a
+provider. Neither "tauka-flutter owns it" nor "tauka-python owns it" is right on
+its own.
+
+- **Resolution taken:** the `app.student.tier` pattern. **tauka-flutter owns the
+  DDL** (it is the `ai` domain, documented in `tauka/shared-db/domains/ai.md`);
+  **tauka-python is the sole writer**, via service role. Chosen over inventing a
+  second arrangement for a problem that already has a documented, working one.
+- **This project assumes:** tauka-python's write on `app.ai_usage` is **INSERT
+  only**. No UPDATE, no DELETE, no DDL, no reads. If tauka-python is ever seen
+  doing anything else with this table, that is a bug and not a change of policy.
+- **The RLS differs from `activity_event` on purpose.** There, the client was the
+  producer and had an INSERT policy. Here the client is the *subject*, so it gets
+  SELECT on its own rows and **no INSERT policy at all** — a spend ledger a client
+  can write is a ledger that reports whatever the client likes. No UPDATE or
+  DELETE policy exists for anyone.
+- **Do not reconcile it against Redis.** Redis holds a pre-flight estimate
+  (`count_tokens(prompt) + 500`), expiring and failing open; this holds a
+  post-hoc measurement, kept. They are supposed to differ. A future maintainer
+  finding the two disagreeing has found the design, not a bug.
+- **Applied 2026-08-23** as migration `ai_usage_ledger`, and the RLS **probed as
+  `authenticated` with the JWT claim set**, rather than inferred from the absence
+  of a policy:
+
+  | Probe | Result |
+  |---|---|
+  | service role INSERT (as tauka-python) | allowed |
+  | **student INSERTs a usage row for themselves** | **DENIED** |
+  | student SELECTs own rows | visible |
+  | student SELECTs another user's rows | invisible |
+  | student UPDATE | ran, changed **0** rows |
+  | student DELETE | ran, removed **0** rows |
+  | `source` = anything but provider/estimate | rejected by CHECK |
+  | negative `total_tokens` | rejected by CHECK |
+
+  The student-INSERT denial is the one that matters: it is the difference between
+  a ledger and a self-reported figure. Probe rows deleted; the table is back to
+  zero.
+
+---
+
+### CONFLICT-031: `learn_streak_days` was documented as written by a function that had already been dropped
+- **Detected by:** tauka-flutter (phase 13 documentation audit)
+- **Date:** 2026-08-23
+- **Type:** DOC_DRIFT
+- **Status:** RESOLVED 2026-08-23 — `identity_access.md` corrected.
+- **Details:** `app.user_profiles.learn_streak_days` was added in the morning of
+  2026-08-23 with `app.refresh_activity_streaks()` as its only writer. That
+  function was **dropped the same day**, in the same session that replaced the
+  row-based activity design with files. The column survived — correctly, it is
+  still the cache the achievement service and tutor dashboard read — but its
+  documentation kept naming a function that no longer exists.
+- **Now true:** the streak is computed on the device from its local rollup and
+  published alongside `activity_summary`. Still derived, still never incremented.
+- **Worth noting:** this is the third time in this work that a comment or doc
+  written under the row design survived into the file design and had to be caught
+  by reading it rather than trusting it. The others were `message_sent`
+  ("countable from `app.messages.sender_id`") and §11's account-deletion claim
+  (CONFLICT-029).
+
+---
+
+### CONFLICT-029: the `activity` bucket never cascaded on account deletion, and tauka-python now deletes rows in a table it does not own
+- **Detected by:** tauka-flutter (building phase 12 of `activity-telemetry-plan.md`)
+- **Date:** 2026-08-23
+- **Type:** PRIVACY_GAP + CROSS_PROJECT_WRITE
+- **Status:** RESOLVED 2026-08-23 — migration `activity_retention_helpers` applied and probed; the nightly sweep now removes a deleted account's files. The cross-project write arrangement in (c) stands as documented and is the part to keep honouring.
+
+**Two things, logged together because the fix is one job.**
+
+**(a) Account deletion did not delete the activity files.** Verified against the
+live database rather than assumed:
+
+| | Cascades from `user_profiles`? |
+|---|---|
+| `app.activity_file` | yes — `activity_file_user_id_fkey`, `ON DELETE CASCADE` |
+| `app.activity_summary` | yes — `ON DELETE CASCADE` |
+| the `activity` **bucket** | **no. There is no foreign key and there never was.** |
+
+So deleting an account removed the catalogue and left the per-device JSONL sitting
+in Storage — unreferenced, unreachable through the app, and still a
+minute-by-minute record of what a person did. `activity-telemetry-plan.md` §11
+and `tauka/shared-db/domains/activity.md` both stated that deletion actually
+deletes. **That sentence was false for anything already uploaded**, from the day
+the bucket was created (2026-08-23, session 27) until phase 12.
+
+Nothing was leaked: the bucket is private, and no account has been deleted since
+it existed — `activity_file`, `activity_summary` and the bucket were all empty
+at the time of writing. The gap was structural, not exploited.
+
+**(b) Deleting a row from `storage.objects` in SQL does not delete the file.** It
+removes the metadata and orphans the blob. Only the Storage API removes bytes.
+This is why the sweep cannot be pg_cron and has to be a service that makes HTTP
+calls — which is tauka-python, and which is what creates (c).
+
+**(c) tauka-python now DELETEs from `app.activity_file`, which tauka-flutter
+owns.** `shared-db/OWNERS.md` said "tauka-flutter only". The alternative was to
+put deletion in the client, which cannot work: the device whose files have
+expired is very often the device that never comes back.
+
+- **This project assumes:** tauka-python's write on `app.activity_file` is
+  **DELETE only**, and only for rows whose `covers_to` is already past the
+  retention window. No INSERT, no UPDATE, no DDL — the `app.student.tier`
+  precedent, narrowed further. If tauka-python is ever seen writing this table
+  any other way, that is a bug and not a change of policy.
+- **Resolution taken:** `OWNERS.md` marks `activity_file` SHARED-WRITE (narrow)
+  and names the exact permitted operation. Two `SECURITY INVOKER` helper
+  functions granted to `service_role` only —
+  `app.expired_activity_files()` and `app.orphaned_activity_objects()` — keep the
+  path selection in SQL, where it is cheap, without giving any client a new way
+  to enumerate anything.
+- **Applied 2026-08-23** as migration `activity_retention_helpers`, and probed
+  against seeded rows rather than assumed:
+
+  | `covers_to` age | Result |
+  |---|---|
+  | 300 days | expired -> deleted |
+  | **91 days** | expired -> deleted |
+  | **90 days (the cutoff itself)** | **kept** |
+  | 2 days, `covers_from` 120 days (straddles) | **kept** — the owning device's to shed |
+  | 0 days | kept |
+
+  The SQL boundary agrees with the Dart one (`isBefore(cutoff)`), which is the
+  cross-check that matters: two implementations of one rule, and an off-by-one in
+  either silently deletes a day of someone's history. `anon` and `authenticated`
+  hold **no** EXECUTE on either function; `service_role` holds both. Probe rows
+  deleted afterwards — `activity_file`, `activity_summary` and the bucket are
+  back to zero.
+
+---
 
 ### CONFLICT-023: four copies of this file, three of them stale, and two numbers used twice
 - **Detected by:** developer (opened `tauka_py_backend/shared-db/CONFLICT_LOG.md`)
@@ -528,7 +990,26 @@ When you discover a duplicate table, mismatched column type, missing table, brok
 - **Detected by:** tauka-python | **Date:** 2026-05-09 | **Status:** RESOLVED (2026-05-09)
 - **Type:** COLUMN_MISMATCH
 - **Details:** Multiple locations in earlier SQL files used the value `'tutor_tier'`. The Python backend uses `'tutor'`.
-- **Resolution:** All CHECK constraints, seed data, and application code use `'tutor'`. Valid tier values: `free | learner | tutor | intensive`.
+- **Resolution (2026-05-09):** All CHECK constraints, seed data, and application code use `'tutor'`. Valid tier values: `free | learner | tutor | intensive`.
+- **SUPERSEDED 2026-08-24 by migration §64.** Tier values now carry an explicit
+  `_tier` suffix: **`free_tier | learner_tier | tutor_tier | intensive_tier`**. The
+  string this entry banned is now canonical.
+
+  **Read this before "fixing" it back.** This entry solved a *spelling* problem —
+  one tier written two ways across two codebases (`'tutor_tier'` in SQL,
+  `'tutor'` in Python) — and resolved it by picking a single spelling. It did not
+  consider that the spelling it picked, `tutor`, was **already in use as a role**
+  (`app.user_profiles.user_type`). So this resolution is what created the
+  tier/role collision, and the collision turned out to be live: three rows in
+  `app.tier_gating_rules` carry `min_tier = 'tutor'` meaning the tutor *role*, and
+  any rank comparison would have handed a paying tutor-tier student the admin
+  dashboard (CONFLICT-036).
+
+  **The hazard this entry identified remains entirely valid** and is the main risk
+  of the rename: two spellings of one tier live in the stack at once. That is why
+  §64 must be applied together with the code changes in all three projects —
+  tauka-python especially, since it writes `app.student.tier` from Stripe webhooks
+  and a rejected write fails silently.
 
 ---
 
@@ -585,3 +1066,86 @@ When you discover a duplicate table, mismatched column type, missing table, brok
 - **Type:** IMPLICIT_CONTRACT
 - **Details:** Original `notifications_insert_teacher_or_admin` policy allowed setting `sender_id` to any UUID.
 - **Resolution:** Policy updated with `sender_id = auth.uid()` guard in the `WITH CHECK` clause.
+
+---
+
+### CONFLICT-026: `unit_progress` was documented as a working sync path for months before anything wrote to it
+- **Detected by:** tauka-flutter (weekly pace accountability, §4.2) | **Date:** 2026-08-23 | **Status:** RESOLVED (2026-08-23)
+- **Type:** DOC_INTEGRITY
+- **Details:** `app.unit_progress` had a table, an `app.upsert_unit_progress()`
+  SECURITY DEFINER RPC, a Dart model (`mainModels.dart:2994`), a field on `Unit`
+  (`:2603`), and two lines in this domain doc describing the sync as working:
+
+  | Line | Claim | Reality when checked |
+  |---|---|---|
+  | `:19` | "my progress syncs when I reconnect" | nothing ever wrote the table |
+  | `:49` | "`sections_completed` updated optimistically" | nothing ever wrote the column |
+
+  `grep -rn "UnitProgress" lib/` returned **only the model definition and the
+  field**. `select count(*) from app.unit_progress` returned 0. Meanwhile
+  `_buildStatusIcon()` in `learn.dart` rendered `–` for every unit in the app,
+  forever — correct code reading data that never arrived, which is the failure
+  mode this pattern produces: the symptom points at the reader.
+
+  Same shape as FC-021 in `shared-features/CONFLICT_LOG.md`, and logged rather
+  than quietly fixed for the same reason: a doc that describes unbuilt work as
+  working will mislead the next person who trusts it, and the record of *how
+  long* it did so is the part worth keeping.
+- **Resolution:** The table has a writer as of 2026-08-23 (phases 6–7 of
+  `weekly-pace-accountability-plan.md`). Both lines are now true; the lifecycle
+  line at `:49` carries a dated note saying since when.
+
+---
+
+### CONFLICT-027: `upsert_unit_progress()` reset `completed_at` on every call, and trusted its caller's `p_user_id`
+- **Detected by:** tauka-flutter (weekly pace accountability, phase 7) | **Date:** 2026-08-23 | **Status:** RESOLVED (2026-08-23)
+- **Type:** IMPLICIT_CONTRACT
+- **Details:** Two defects in a function that had never been called, found while
+  writing its first caller.
+
+  1. **`completed_at` moved forward on every sync.**
+     ```sql
+     completed_at = CASE WHEN EXCLUDED.status = 'completed' THEN now() ELSE ... END
+     ```
+     Any re-upsert of a completed unit stamped it with the moment of the sync.
+     The pace graph steps at that date and must be monotonic; left alone, every
+     reconnect would have walked the graph forward and overwritten the client's
+     correct local date. `started_at` had the milder version:
+     `COALESCE(existing, now())` is set-once, but it is the **server's** `now()`,
+     and this is an offline-first app — a student who works through a unit on
+     Monday and reconnects on Friday started on Monday.
+  2. **`SECURITY DEFINER` with no identity check.** The function took
+     `p_user_id` and wrote it into the row. RLS (`unit_progress_all_own`) would
+     have stopped a direct write to another user's row; routing through this
+     function stepped around it. Never exploited, because nothing ever called
+     it — the same reason CONFLICT-026 went unnoticed.
+- **Resolution:** Migration `upsert_unit_progress_client_timestamps`, applied
+  2026-08-23. Both timestamps are now supplied by the client and merged with
+  `LEAST` (which ignores NULLs), so the earliest non-null wins and neither can
+  move forward. The function raises unless `p_user_id = auth.uid()`. The
+  six-argument signature was dropped rather than replaced — a different
+  parameter list creates an overload, not a replacement — which was safe because
+  it had no callers in any of the three projects.
+- **Note for the next reader:** the two defects share a cause. A function
+  nobody calls is not exercised by anything, so neither its arithmetic nor its
+  security posture is under any pressure to be right. Treat unused SQL as
+  unreviewed on first use rather than as working code.
+
+---
+
+### CONFLICT-028: `sections_completed` was documented and typed as a map of booleans, and is not
+- **Detected by:** tauka-flutter (weekly pace accountability, phase 7) | **Date:** 2026-08-23 | **Status:** RESOLVED (2026-08-23)
+- **Type:** IMPLICIT_CONTRACT
+- **Details:** `app.unit_progress.sections_completed` was described in this
+  domain doc as "Map of section_id → completion state" and typed in Dart as
+  `UnitProgress.sectionsCompleted : Map<String, bool>`. The completion rule
+  needs a **fraction per exercise**, not a flag: whether an exercise cleared
+  0.50 is derived from its value, and storing only the derived answer throws
+  away the number the progress bar and the remote row both report.
+- **Resolution:** Since the column had never been written, there was no data to
+  stay compatible with, and the documentation was corrected to the shape the
+  feature needs rather than the payload being bent to fit it:
+  `{"<sectionIndex>_<sectionTypeName>": {"kind": "keyed|spoken|engagement",
+  "value": 0.0–1.0}}`, one entry per exercise, reference and note sections
+  absent. The Dart model's `Map<String, bool>` field is now wrong in the other
+  direction; it is read by nothing and was left alone rather than changed blind.

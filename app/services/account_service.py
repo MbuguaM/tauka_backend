@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)
 stripe.api_key = settings.stripe_secret_key
 
 _TIER_PRICES = {
-    "learner": settings.stripe_price_learner_monthly,
-    "tutor": settings.stripe_price_tutor_monthly,
-    "intensive": settings.stripe_price_intensive_monthly,
+    "learner_tier": settings.stripe_price_learner_monthly,
+    "tutor_tier": settings.stripe_price_tutor_monthly,
+    "intensive_tier": settings.stripe_price_intensive_monthly,
 }
 
 _PRICE_TO_TIER = {v: k for k, v in _TIER_PRICES.items() if v}
@@ -24,7 +24,7 @@ async def get_full_subscription(user_id: str) -> dict:
     ).eq("id", user_id).execute()
 
     profile = profile_result.data[0] if profile_result.data else {}
-    tier = profile.get("tier", "free")
+    tier = profile.get("tier", "free_tier")
     tier_source = profile.get("tier_source", "self")
     stripe_customer_id = profile.get("stripe_customer_id")
     stripe_subscription_id = profile.get("stripe_subscription_id")
@@ -118,18 +118,18 @@ async def change_subscription(user_id: str, new_tier: str, success_url: str | No
     ).eq("id", user_id).execute()
 
     profile = profile_result.data[0] if profile_result.data else {}
-    current_tier = profile.get("tier", "free")
+    current_tier = profile.get("tier", "free_tier")
     stripe_sub_id = profile.get("stripe_subscription_id")
     stripe_customer_id = profile.get("stripe_customer_id")
 
     # Cannot downgrade while active gift is present
-    if profile.get("active_gift_id") and new_tier != "free":
+    if profile.get("active_gift_id") and new_tier != "free_tier":
         from app.services.tier_service import TIER_RANK
         # Allow changes, they'll apply after gift expires
         pass
 
     # Free → Paid: create Checkout Session
-    if current_tier == "free" and new_tier != "free":
+    if current_tier == "free_tier" and new_tier != "free_tier":
         try:
             user_result = db.auth.admin.get_user_by_id(user_id)
             email = user_result.user.email if user_result and user_result.user else ""
@@ -147,7 +147,7 @@ async def change_subscription(user_id: str, new_tier: str, success_url: str | No
         return {"action": "checkout", "checkout_url": result["checkout_url"]}
 
     # Paid → Free: cancel at period end
-    if new_tier == "free" and stripe_sub_id:
+    if new_tier == "free_tier" and stripe_sub_id:
         await asyncio.to_thread(
             lambda: stripe.Subscription.modify(stripe_sub_id, cancel_at_period_end=True)
         )
@@ -157,7 +157,7 @@ async def change_subscription(user_id: str, new_tier: str, success_url: str | No
         return {"action": "cancelled", "message": "Subscription will cancel at period end"}
 
     # Paid → Different Paid: update Stripe subscription
-    if stripe_sub_id and new_tier not in ("free", current_tier):
+    if stripe_sub_id and new_tier not in ("free_tier", current_tier):
         price_id = _TIER_PRICES.get(new_tier)
         if not price_id:
             raise ValueError(f"Unknown tier: {new_tier}")
@@ -296,7 +296,11 @@ async def create_billing_portal_session(user_id: str) -> str:
 
 def _plan_price_cents(tier: str) -> int:
     """PY-003: monthly plan price in integer cents (never float)."""
-    prices = {"learner": 1400, "tutor": 4000, "intensive": 11900}
+    # STALE PRICES CORRECTED 2026-08-24. These were $14 / $40 / $119 and the
+    # published pricing page (tauka-react-web/src/routes/pricing.jsx) charges
+    # $32 / $75 / $145. Server-side display/proration figures must not disagree
+    # with what the customer is actually billed.
+    prices = {"learner_tier": 3200, "tutor_tier": 7500, "intensive_tier": 14500}
     return prices.get(tier, 0)
 
 
