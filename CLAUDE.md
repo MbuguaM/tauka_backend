@@ -232,7 +232,8 @@ This project shares a database with `tauka-flutter` and `tauka-react-web`. The s
 This project OWNS the following domains and may CREATE/ALTER their tables:
 
 - **test_referral** → test_questions, test_sessions, test_share_events, test_referrals, test_supporters, milestone_notifications, gift_subscriptions, testimonial_requests, email_verifications
-- **tutor_management** → tutor_sessions, tutor_payout_settings, tutor_payroll, payroll_line_item, tutor_rates
+- **tutor_management** → tutor_sessions, tutor_payout_settings, tutor_referral_link, referral_signup, rate_card, tutor_rate_version, float_ledger, payout_run, payout_line
+  - `tutor_payroll`, `payroll_line_item` and `tutor_rates` were **DROPPED 2026-08-27 (§75)** — see CONFLICT-040. Do not re-create them, and do not repair `supabase/functions/payroll/`.
 - **platform_config** → feature_flag, tier_gating_rules, config, stripe_events, achievements
 
 ### What This Project Reads But Does NOT Own
@@ -242,7 +243,8 @@ These tables are owned by other projects. You may SELECT from them but NEVER cre
 - `user_profiles` (owned by tauka-flutter) — reads for user data and admin role checks
 - `admin_users` (owned by tauka-flutter) — reads for admin permission checks
 - `video_session` (owned by tauka-flutter) — reads `id`, `tutor_id`, `scheduled_at`, `status` for earnings calculation
-- `tutor` (owned by tauka-flutter) — reads for per-session rate calculation
+- `tutor` (owned by tauka-flutter) — reads `country_code` to select a rate card, and `created_at` for tenure. **`per_session_rate_cents` is ORPHANED (§75)** — held at 0 and read only as a fallback in `get_earnings`
+- `cohort_session` / `one_to_one_session` (owned by tauka-flutter) — read to count **delivered** sessions for a payout run. `cohort_session.lead_tutor_id` is who *led* the occurrence and may be a guest
 - `tutor_assignment` (owned by tauka-flutter) — reads for cohort tutor–student mapping
 - `push_tokens` (owned by tauka-flutter) — reads token list for FCM push dispatch
 
@@ -312,7 +314,8 @@ If you discover a duplicated table, mismatched column type, missing table, or a 
 ## Code Conventions
 
 - All timestamps are UTC, stored as `TIMESTAMPTZ`
-- Money is stored as integer cents (`amount_cents`), never float
+- Money is stored as **integer minor units**, never float. Single-currency tables use `amount_cents`; anything spanning currencies uses `*_minor` **plus an explicit `currency` (ISO 4217, NOT NULL)** — §75 onwards, because a rate card per country (D-17) means "cents" is wrong for a Ugandan shilling. `numeric` is for an FX **rate** only, never an amount
+- A money balance is **never a column**: `float_ledger` and `session_entitlement` are append-only and a balance is a fold. Never fold across currencies
 - IDs are UUID — never mix with serial integers
 - Soft deletes use `deleted_at TIMESTAMPTZ NULL`, never boolean flags
 - Table names are **singular snake_case**: `student`, not `students`

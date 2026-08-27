@@ -235,3 +235,164 @@ class UpdatePayoutRequest(BaseModel):
     # M-Pesa fields
     mpesa_phone: Optional[str] = None
     mpesa_name: Optional[str] = None
+
+
+# ── Tutor referral attribution (plan Phase 1, spec §1.1) ──────────────────────
+#
+# Distinct from the Segment C.5 models above: those describe a placement-test
+# share; these describe a paying signup and the revenue share that follows it.
+# CONFLICT-039.
+
+class TutorReferralLinkResponse(BaseModel):
+    link_id: str
+    code: str
+    share_url: str
+    created_at: Optional[str] = None
+    rotated: bool = False
+
+
+class TutorReferralLookupResponse(BaseModel):
+    valid: bool
+    tutor_name: Optional[str] = None
+
+
+class ClaimReferralRequest(BaseModel):
+    # Matches the CHECK on app.tutor_referral_link.code (4..64).
+    code: str = Field(..., min_length=4, max_length=64)
+    # A slug from tutor_referral_service.SOURCE_PLATFORMS, never free text and
+    # never anything the visitor typed. An unrecognised value is dropped, not
+    # stored — see normalise_source_platform.
+    source_platform: Optional[str] = Field(None, max_length=32)
+
+
+class ClaimReferralResponse(BaseModel):
+    attributed: bool
+    already_attributed: bool
+    tutor_name: Optional[str] = None
+    # attributed | already_attributed | unknown_code | self_referral |
+    # no_student_row
+    reason: str
+
+
+class TutorReferralSignupItem(BaseModel):
+    """One attributed signup, carrying **no student identity** — see
+    tutor_referral_service.get_referral_report for why."""
+    signed_up_at: str
+    source_platform: Optional[str] = None
+    still_active: bool
+    first_match_honoured: bool
+    vested_share_bp: int
+
+
+class TutorReferralReportResponse(BaseModel):
+    code: Optional[str] = None
+    share_url: Optional[str] = None
+    total_signups: int
+    still_active: int
+    first_match_honoured: int
+    total_vested_share_bp: int
+    # False until Phase 3 computes vesting. The client must render "not yet in
+    # effect" rather than a confident 0%.
+    vesting_active: bool
+    signups: list[TutorReferralSignupItem]
+
+
+# ── Home/guest relation and the 1-on-1 lane (plan Phase 2) ────────────────────
+
+class CreateLinkRequest(BaseModel):
+    student_id: str
+    tutor_id: str
+    role: Literal["home", "guest"]
+    # `referral` is written by the matcher when a referral_signup row decided the
+    # home tutor; `handoff` by the §1.7 warm-handoff flow. An admin screen sends
+    # `admin`, which is the default and the only one a human picks.
+    source: Literal["referral", "matched", "admin", "handoff"] = "admin"
+
+
+class BookSessionRequest(BaseModel):
+    tutor_id: str
+    # ISO-8601 instant. Sent back verbatim from the slot the client was shown,
+    # rather than reconstructed — the server expanded the availability window and
+    # is the only side that did the timezone arithmetic.
+    starts_at: str
+    # {25, 50} from the pricing page. Never a hardcoded 50.
+    duration_minutes: Literal[25, 50] = 50
+    availability_id: Optional[str] = None
+
+
+class CancelSessionRequest(BaseModel):
+    session_id: str
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+class MarkSessionRequest(BaseModel):
+    """The tutor's record of whether a booked 1-on-1 happened.
+
+    No `pending` here, unlike cohort attendance: a booked session is already the
+    unmarked state, so a third value would be a second way to say the same thing.
+    """
+    session_id: str
+    outcome: Literal["completed", "no_show"]
+
+
+# ── Payouts (plan Phase 3a, spec §1.4) ────────────────────────────────────────
+
+class ApproveRunRequest(BaseModel):
+    run_id: str
+
+
+class RecordDisbursementRequest(BaseModel):
+    """Recording a payment a human already made by hand (§11.4's manual driver)."""
+    line_id: str
+    # An M-Pesa receipt, a bank reference — whatever proves it was sent. A future
+    # automated driver writes the same field, so nothing downstream changes.
+    external_ref: str = Field(..., min_length=1, max_length=200)
+    # Only when the money settled in a currency other than the line's. The table
+    # REFUSES that combination without fx_rate and fx_source: otherwise a tutor's
+    # real pay drifts with the market and neither side can reconstruct why last
+    # month differed from this one (§11.3).
+    settled_amount_minor: Optional[int] = Field(None, ge=0)
+    settled_currency: Optional[str] = Field(None, min_length=3, max_length=3)
+    fx_rate: Optional[float] = Field(None, gt=0)
+    fx_source: Optional[str] = Field(None, max_length=100)
+
+
+# ── Termly commitment (plan Phase 4, spec §1.3) ───────────────────────────────
+
+class CommitmentCheckoutRequest(BaseModel):
+    course_id: str
+    billing_mode: Literal["prepay", "installment"]
+    # The tier the commitment ENTITLES. Not a tier value of its own — §4.4:
+    # "app.student.tier stays the entitlement axis; the commitment is a separate
+    # contract that the matcher reads as a hard constraint."
+    tier: Literal["learner_tier", "tutor_tier", "intensive_tier"] = "tutor_tier"
+    # The guarantee the product is sold on (§2.3). Optional at checkout: a
+    # student may commit before they have been matched.
+    locked_home_tutor_id: Optional[str] = None
+    amount_minor: int = Field(..., ge=0)
+    currency: str = Field("USD", min_length=3, max_length=3)
+    # e.g. "unit_order:15". A threshold on unit.unit_order, NOT a level name —
+    # app.unit has no `level` column, so a level target would never fire.
+    milestone_target: Optional[str] = Field(None, max_length=64)
+    customer_email: Optional[EmailStr] = None
+    success_url: Optional[str] = None
+    cancel_url: Optional[str] = None
+
+
+class CancelCommitmentRequest(BaseModel):
+    commitment_id: str
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+# ── Trust (plan Phase 5a, D-12) ───────────────────────────────────────────────
+
+class TrustWarningRequest(BaseModel):
+    """An anonymous counter tick.
+
+    **There is no user, conversation or message field here, on purpose** (§17.3).
+    The caller is authenticated so the counter cannot be spammed; nothing about
+    them is recorded. Adding an id to this model would turn a counter into
+    surveillance and re-open L-008.
+    """
+    pattern_class: str = Field(..., min_length=1, max_length=40)
+    proceeded: bool = False

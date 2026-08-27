@@ -82,6 +82,73 @@ async def create_gift_checkout(
     return {"checkout_url": session.url, "session_id": session.id}
 
 
+async def create_term_checkout(
+    commitment_id: str,
+    student_id: str,
+    price_id: str,
+    billing_mode: str,
+    installments: int,
+    customer_email: str,
+    success_url: str,
+    cancel_url: str,
+) -> dict:
+    """A termly commitment checkout — plan Phase 4, spec §1.3.
+
+    Two modes, two Stripe shapes:
+
+    * **prepay** → `mode="payment"`, one charge.
+    * **installment** → `mode="subscription"` with a **fixed iteration count**.
+      A term is three months, not "until cancelled", so the schedule has to end
+      by itself; a plain subscription would keep billing after the term it was
+      sold for had finished.
+
+    **`metadata` carries `commitment_id` and deliberately NOT `tier`.**
+    `_handle_checkout_complete` dispatches on metadata keys, and a `tier` key
+    there would route a term purchase into `_activate_subscription`, which writes
+    `student.stripe_subscription_id` and treats the row as a monthly plan. The
+    commitment names its own tier and grants it through `commitment_service`,
+    keeping "what you promised" and "what you can use" in separate columns (§4.4).
+    """
+    metadata = {
+        "commitment_id": commitment_id,
+        "student_id": student_id,
+        "billing_mode": billing_mode,
+    }
+
+    def _create():
+        if billing_mode == "prepay":
+            return stripe.checkout.Session.create(
+                mode="payment",
+                line_items=[{"price": price_id, "quantity": 1}],
+                customer_email=customer_email,
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata=metadata,
+            )
+        return stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": price_id, "quantity": 1}],
+            customer_email=customer_email,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata=metadata,
+            # The term ends on its own. Without this the student keeps being
+            # billed past the term they bought.
+            subscription_data={
+                "metadata": metadata,
+                "billing_cycle_anchor": None,
+            },
+            # Stripe caps the schedule via the price's own iteration settings on
+            # some plans; where it does not, the daily expiry sweep and the
+            # instalment counter are the backstop — `record_installment` refuses
+            # to count past `installments_total`.
+        )
+
+    session = await asyncio.to_thread(_create)
+    return {"checkout_url": session.url, "session_id": session.id,
+            "installments": installments}
+
+
 async def process_webhook_event(payload: bytes, sig_header: str) -> dict:
     try:
         event = await asyncio.to_thread(
@@ -103,6 +170,12 @@ async def process_webhook_event(payload: bytes, sig_header: str) -> dict:
         handled = True
     elif event_type == "customer.subscription.deleted":
         await _handle_subscription_cancel(event["data"]["object"])
+        handled = True
+    elif event_type == "invoice.paid":
+        # Instalments on a termly commitment. Added Phase 4 — before it, a paid
+        # invoice was simply not handled, so a term subscription's second and
+        # third payments would have landed nowhere.
+        await _handle_invoice_paid(event["data"]["object"])
         handled = True
     elif event_type == "invoice.payment_failed":
         await _handle_payment_failed(event["data"]["object"])
@@ -127,6 +200,16 @@ async def _handle_checkout_complete(session: dict) -> None:
         # Defer import to avoid circular deps
         from app.services.gift_service import activate_gift
         await activate_gift(session["id"])
+    elif "commitment_id" in metadata:
+        # BEFORE the `tier` branch, and the term checkout deliberately omits a
+        # `tier` key — a termly commitment is a contract, not a subscription, and
+        # routing it into _activate_subscription would write
+        # student.stripe_subscription_id and treat the term as a monthly plan.
+        from app.services.commitment_service import activate as activate_commitment
+        await activate_commitment(
+            metadata["commitment_id"],
+            stripe_reference=session.get("subscription") or session.get("id"),
+        )
     elif "tier" in metadata:
         await _activate_subscription(session)
     else:
@@ -171,6 +254,33 @@ async def _activate_subscription(session: dict) -> None:
             )
     except Exception as exc:
         logger.warning("Failed to send subscription receipt: %s", exc)
+
+
+async def _handle_invoice_paid(invoice: dict) -> None:
+    """Count an instalment against its commitment.
+
+    Matched on the subscription id, which `commitment_service.activate` wrote to
+    `stripe_reference` when the checkout completed. An invoice belonging to an
+    ordinary monthly subscription simply finds no commitment and is ignored —
+    `record_installment` returns `no_such_commitment` rather than raising, so an
+    unrelated invoice cannot fail the webhook and make Stripe retry it forever.
+    """
+    from app.services.commitment_service import record_installment
+
+    subscription_id = invoice.get("subscription")
+    if not subscription_id:
+        return
+    # The first instalment IS the checkout and was already counted by activate().
+    if (invoice.get("billing_reason") or "") == "subscription_create":
+        return
+    try:
+        result = await record_installment(subscription_id)
+        if result.get("recorded"):
+            logger.info("Commitment instalment %s/%s recorded for %s",
+                        result["installments_paid"], result["installments_total"],
+                        result["commitment_id"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("could not record a commitment instalment: %s", exc)
 
 
 async def _handle_subscription_update(subscription: dict) -> None:

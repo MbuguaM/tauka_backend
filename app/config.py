@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     stripe_price_learner_monthly: str = ""
     stripe_price_tutor_monthly: str = ""
     stripe_price_intensive_monthly: str = ""
+    # Termly commitment (plan Phase 4). D-18: DEFINED AND UNSET — no Stripe
+    # price objects exist yet, and `featureStatus.js` gates the UI at
+    # 'coming' until they do. commitment_service refuses checkout by name
+    # rather than letting Stripe reject an empty price id.
+    stripe_price_term_prepay: str = ""
+    stripe_price_term_installment: str = ""
     stripe_price_gift_1mo: str = ""
     stripe_price_gift_3mo: str = ""
 

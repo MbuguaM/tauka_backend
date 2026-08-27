@@ -1,8 +1,8 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.dependencies import require_tutor
-from app.models.schemas import UpdatePayoutRequest
-from app.services import tutor_service
+from app.models.schemas import TutorReferralReportResponse, UpdatePayoutRequest
+from app.services import tutor_referral_service, tutor_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -68,3 +68,19 @@ async def get_student_detail(
         return await tutor_service.get_student_detail(user_id, student_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ── Referrals (plan Phase 1, spec §1.1) ───────────────────────────────────────
+
+@router.get("/referrals", response_model=TutorReferralReportResponse)
+async def get_referral_report(user_id: str = Depends(require_tutor)):
+    """Referral performance for the calling tutor — signups, retention, vested
+    share. Spec §1.1's `GET /tutor/{id}/referrals`, with the id taken from the
+    verified token instead of the path (see `GET /referrals/tutor/link`).
+
+    **No student is named in the response.** Referring someone does not make you
+    their tutor, and retention is a count rather than a roster. The link/rotate
+    routes live under `/referrals/tutor/*`; this one lives here because it is
+    the tutor portal's read model, alongside earnings.
+    """
+    return await tutor_referral_service.get_referral_report(user_id)

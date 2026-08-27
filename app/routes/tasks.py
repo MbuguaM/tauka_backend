@@ -78,12 +78,28 @@ async def run_daily_tasks(authorization: str | None = Header(default=None)):
     from app.tasks.activity_retention import run_activity_retention_task
     from app.tasks.gift_lifecycle import run_gift_lifecycle
     from app.tasks.milestone_check import run_milestone_check
+    from app.tasks.commitment_lifecycle import (
+        report_unmarked_sessions,
+        run_commitment_lifecycle,
+    )
+    from app.tasks.payout_cycle import run_payout_cycle
     from app.tasks.testimonial_outreach import run_testimonial_outreach
 
     jobs = (
         ("gift_lifecycle", run_gift_lifecycle),
         ("milestone_check", run_milestone_check),
         ("testimonial_outreach", run_testimonial_outreach),
+        # Runs daily, but only the float alarm fires daily; the rate recompute,
+        # the vesting recalculation and the payout run sit behind a cadence
+        # guard reading `payout.cadence_day`. Placed before activity_retention
+        # for the same reason everything is: it does not delete anything.
+        ("payout_cycle", run_payout_cycle),
+        # Before the payout cycle would also be fine; after it is chosen so a
+        # term expiring on the 1st is not raced by the run that pays for it.
+        ("commitment_lifecycle", run_commitment_lifecycle),
+        # Reports only. A 1-on-1 becomes payable when its tutor marks it,
+        # never when a job notices it is in the past.
+        ("unmarked_sessions", report_unmarked_sessions),
         # Last on purpose: it is the only job here that deletes anything, and
         # nothing else depends on it having run. A day late costs storage; a
         # mail job skipped because deletion threw costs a person their email.

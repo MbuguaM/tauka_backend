@@ -7,7 +7,8 @@ from app.config import settings
 from app.routes import (
     ai, messaging, calling,
     subscriptions, test, supporters, gifts, testimonials,
-    referrals, account, tutor_portal, tasks,
+    referrals, account, tutor_portal, tasks, tutoring, payouts, commitments,
+    trust,
 )
 
 
@@ -74,6 +75,19 @@ app.include_router(account.router, prefix="/account")
 
 # Tutor portal
 app.include_router(tutor_portal.router, prefix="/tutor")
+
+# Home/guest relation + the 1-on-1 booking lane (plan Phase 2)
+app.include_router(tutoring.router, prefix="/tutoring")
+
+# The payout rail (plan Phase 3a). Computes and records; disburses nothing.
+app.include_router(payouts.router, prefix="/payouts")
+
+# Termly commitments (plan Phase 4). Checkout is 503 until D-18's placeholder
+# Stripe price objects are replaced with real ones.
+app.include_router(commitments.router, prefix="/commitments")
+
+# Trust (plan Phase 5a). Anonymous counters only — no flags, no user ids.
+app.include_router(trust.router, prefix="/trust")
 
 # Externally-triggered scheduled jobs (Vercel Cron). Guarded by CRON_SECRET.
 app.include_router(tasks.router, prefix="/tasks")

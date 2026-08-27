@@ -18,8 +18,11 @@
 > when `CONFLICT-013` and `CONFLICT-014` were each in use twice. The older,
 > resolved entry of each pair was renumbered — `playlist_id` 013 → **024**,
 > `dict_url` 014 → **025** — and both carry a "formerly" line so an older
-> reference still resolves. **The next free number is 037.**
-> Last updated by: tauka-flutter on 2026-08-24
+> reference still resolves. **The next free number is 041.**
+> (It read 037 until 2026-08-27, by which time CONFLICT-037 had been filed —
+> the next entry would have been the third duplicate this banner exists to
+> prevent. Whoever adds an entry: bump this line in the same edit.)
+> Last updated by: tauka-flutter on 2026-08-27
 
 ---
 
@@ -30,6 +33,197 @@ When you discover a duplicate table, mismatched column type, missing table, brok
 2. Add a comment in your code: `// CONFLICT: see CONFLICT_LOG.md #[number]` (or `# CONFLICT: ...` in Python).
 3. Use a workaround and document it.
 4. Inform the developer — do NOT silently fix conflicts.
+
+---
+
+## Active Conflicts
+
+### CONFLICT-040: two payout systems, and the older one was never wired up
+- **Detected by:** tauka-flutter (implementation plan Phase 3a, spec §1.4)
+- **Date:** 2026-08-27
+- **Type:** DUPLICATE_SUBSYSTEM
+- **Status:** **RESOLVED by supersession** — the older three tables are dropped.
+
+**What was there.** `app.tutor_payroll`, `app.payroll_line_item` and
+`app.tutor_rates`, plus a `payroll` Edge Function, described in
+`tutor_management.md` as the working payout path:
+
+> Edge Function (`supabase/functions/payroll/`) queries `app.tutor_sessions` +
+> `app.tutor_rates` to compute each tutor's earnings. INSERTs rows to
+> `app.tutor_payroll` and `app.payroll_line_item`.
+
+**What was actually true**, measured 2026-08-27:
+
+| Claim | Reality |
+|---|---|
+| Three tables holding payroll | **0 rows in all three** |
+| Money | `numeric` in all three, against the integer-minor-units rule |
+| A currency on each line | `payroll_line_item` has **no currency column at all** |
+| An Edge Function computing it | **Not deployed. Zero Edge Functions exist on this project** |
+| It reads `app.profiles` | No such table — it is `user_profiles` |
+| It reads `app.video_sessions` | No such table — it is `video_session`, singular |
+| It reads `tutor_rates.rate_per_session` | No such column — it is `rate_amount` |
+| It writes `tutor_payroll` | It writes **`app.cohort_payments`** — not what the doc says |
+
+Four wrong table and column names in one function, and it had never run.
+
+**Resolution.** `app.payout_run`, `app.payout_line` and
+`app.tutor_rate_version` (§75) replace them. D-07 had already authorised
+superseding `tutor_rates`; the developer extended the same reasoning to the
+other two rather than leave two payout systems live. All three were dropped
+after verifying 0 rows and **no foreign key anywhere pointing at them**.
+
+**What is different, and why it is not just a rename:**
+
+- **`currency` NOT NULL on every money row.** D-17 settled a rate card per
+  country — KES, ETB, UGX locally; EUR, GBP, USD for Europe and the US — so a
+  payout row without a currency is not interpretable.
+- **`float_ledger` is append-only and folded per currency.** §11.3: a balance
+  fold must never mix currencies.
+- **`tutor_rate_version.inputs`** snapshots what a rate was derived from, which
+  is what makes a past payout explicable rather than merely reproducible.
+- **`payout_line` carries the FX leg** — `fx_rate`, `fx_source`,
+  `fx_captured_at`, `settled_amount_minor` — snapshotted at settlement, with a
+  CHECK refusing a cross-currency settlement that has no rate.
+
+**Do not:**
+- re-create `tutor_payroll` or `payroll_line_item`, or "restore" the payroll
+  Edge Function. Its four broken references are recorded above precisely so
+  nobody repairs it instead of replacing it;
+- add a money column without a currency beside it;
+- read `app.tutor.per_session_rate_cents` for anything. It is ORPHANED, held at
+  0 for every tutor, and `tutor_service.get_earnings` now reads
+  `tutor_rate_version` with it as a fallback only.
+
+**A related finding, logged separately as O-20.** `tauka/supabase/functions/`
+holds **seven** Edge Function sources and **none of them is deployed** —
+including `send-push`, which `CLAUDE.md` names as the only permitted FCM
+dispatcher. The payroll one was found because Phase 3a needed it; the other six
+have not been checked.
+
+---
+
+### CONFLICT-039: two referral systems, one word, and a query parameter they both want
+- **Detected by:** tauka-flutter (implementation plan Phase 1, spec §1.1)
+- **Date:** 2026-08-27
+- **Type:** NEAR_DUPLICATE_BY_DESIGN + URL_NAMESPACE_COLLISION
+- **Status:** RESOLVED by separation — both objects stay; the parameter was split. Logged so nobody merges them.
+
+**Two tables that sound identical and are not.**
+
+| | `app.test_referrals` | `app.tutor_referral_link` + `app.referral_signup` |
+|---|---|---|
+| Domain | `test_referral` | `tutor_management` |
+| Attributes | a placement-test **share** | a paying **signup** and a revenue share |
+| Sender | a visitor or a student, unauthenticated | a tutor, always |
+| Subject | someone who may never sign up | someone who has an `app.student` row |
+| Lifecycle | opened → test started → completed → approved | claimed once, then permanent |
+| Money | none | `vested_share_bp`, and Phase 3 pays against it |
+
+Both are real and both must stay. `test_referrals` is explicitly out of scope in
+the implementation plan §10 ("Rebuilding the placement-test referral system.
+`test_referrals` stays as it is"). The pair added in §72 is what §1.1 asked for.
+
+**Why this is logged rather than just noted.** A future reader greps `referral`,
+finds two systems, and merges them for tidiness. That merge would break billing:
+`referral_signup.student_id` is UNIQUE — one attribution per student, ever — and
+`test_referrals` has no such constraint because a person may be shared a test
+many times. Folding one into the other loses the constraint that *is* the
+integrity of the revenue share.
+
+**The part that was a live collision, not just a naming risk.**
+`referral_service.handle_test_completion` and `handle_approval` both already
+mail links of the form:
+
+```
+{web_base_url}/signup?ref={test_referrals.referral_code}
+```
+
+So `?ref=` on `/signup` was **already taken**, by the other namespace. The plan's
+Phase 1 text says "persist `?ref=` … through `/signup`", which would have put two
+code namespaces in one parameter. Nothing would have thrown: a tutor code looked
+up in `test_referrals` simply misses, and a miss is indistinguishable from a
+typo.
+
+**Resolution.** The tutor referral link uses **`?tref=`**, with an optional
+`&src=<platform-slug>`. `?ref=` keeps its existing meaning and its existing
+emails keep working. The parameter name is built server-side
+(`tutor_referral_service.build_signup_url`) so it exists in exactly one place;
+the Flutter client reads `share_url` off the response rather than composing one,
+and `tauka-react-web/src/utilities/referral.js` reads `tref` and nothing else.
+
+**Do not:**
+- merge the two table sets, or add a UNIQUE to `test_referrals.sender_student_id`
+  to make them "consistent";
+- start writing tutor codes into `?ref=`, or teach the tutor claim endpoint to
+  fall back to `test_referrals` — a code that resolves in the wrong table would
+  attribute revenue to the wrong person;
+- assume a code is one or the other by shape. Both are 8 characters from the same
+  generator alphabet, deliberately: the parameter carries the meaning, not the
+  string.
+
+---
+
+### CONFLICT-038: `app.dictionary_entry` exists in production, and five canonical documents say it must never exist
+- **Detected by:** tauka-flutter (implementation plan Phase 0a, reconciling `db.sql` against the live database)
+- **Date:** 2026-08-27
+- **Type:** BANNED_OBJECT_EXISTS + DOC_CONTRADICTION
+- **Status:** OPEN — logged, not fixed. Dropping it is DDL on production and is the developer's call.
+
+**The anti-pattern.** `shared-db/ARCHITECTURE_INDEX.md:64`, in Global
+Anti-Patterns:
+
+> Never create `dictionary_entry` or `word_pair` tables — entries are stored
+> inline as JSON arrays in `app.dictionary.dict` and `app.anki_deck.deck`.
+
+Repeated in `course_content.md` three times ("**CRITICAL:** `app.dictionary_entry`
+does NOT exist. Never create it."), in `content_governance.md:116`, and in
+tauka-python's own schema copy at `db.sql:404` ("IMPORTANT: dictionary_entry
+table does NOT exist").
+
+**The table.** Queried against the live database 2026-08-27:
+
+```
+app.dictionary_entry — 9 columns, RLS enabled, 2 policies, 1 index, 0 rows
+(id, dictionary_id, word, translation, pronunciation, part_of_speech,
+ example, audio_url, created_at)
+```
+
+That is precisely the normalised-entry shape the anti-pattern names. It was not
+created by accident: it has RLS enabled, a public-read policy, an admin-manage
+policy, and an FK index. Someone built it properly.
+
+**Where it came from.** `tauka_py_backend/app/models/Proposed_additions_db.sql:72`
+— a file named *Proposed* additions, whose contents were applied. The live table
+matches that DDL column for column, including both policy names.
+
+**And one document agrees with the table rather than the canon.**
+`tauka/documentation.md:761` describes it as real and gives a rationale:
+
+> `app.dictionary_entry` holds the individual words — pronunciation, part of
+> speech, example sentence, audio URL. Keeping entries in rows (rather than a
+> JSON blob) allows efficient full-text search and partial loading.
+
+It further claims `DictionaryStateManager` "loads entries from Supabase". It does
+not — the dictionary is read from `app.dictionary.dict`, and the table has never
+held a row.
+
+**Why this is more than tidiness.** `tauka/tool/audit_supabase_calls.py:42` — the
+tool that produced the FL-010 audit — carries `dictionary_entry` in its list of
+known-good tables, because that list was derived from the **live schema**. So a
+call site targeting `app.dictionary_entry` would pass the audit that exists
+specifically to catch calls to tables that should not be used. The banned object
+is currently laundering itself through the checker.
+
+- **Impact today: none.** Zero rows, no reader, no writer, nothing depends on it.
+- **Recommended fix:** `DROP TABLE app.dictionary_entry` (with its policies and
+  index), correct `tauka/documentation.md:761`, and remove the entry from
+  `audit_supabase_calls.py`'s table list so the checker enforces the canon
+  instead of the accident. **Not done here** — dropping a production object is
+  the developer's decision, and `CLAUDE.md` says log rather than silently fix.
+- **Do not** simply delete the anti-pattern line to resolve the contradiction.
+  The reason for the rule (entries live in `dictionary.dict`; CONFLICT-017 covers
+  what that column actually holds) is unchanged and the table has never been used.
 
 ---
 
@@ -225,7 +419,10 @@ clean), and the Dart map keys match.
 ### CONFLICT-033: two different definitions of "my student" are enforced in one schema
 - **Detected by:** tauka-flutter (tutor dashboard activity reader)
 - **Date:** 2026-08-24
-- **Status:** OPEN — logged, worked around, not resolved
+- **Status:** **RESOLVED 2026-08-27** — see the resolution at the end of this
+  entry. The course join is canonical (D-05); `app.student.tutor_id` is dropped.
+  **The count in the table below was wrong: TWO policies keyed on the column,
+  not one.**
 - **Type:** IMPLICIT_CONTRACT
 - **Details:** The RLS policies disagree about what makes a student *this
   tutor's* student, and the disagreement is invisible until a tutor sees a
@@ -258,9 +455,51 @@ clean), and the Dart map keys match.
   that has no course. This is a schema decision for the developer, not a client
   workaround.
 
----
+#### RESOLUTION — 2026-08-27, migration `s73_student_tutor_link_and_cohort_rota`
 
-## Active Conflicts
+**Decision (developer, D-05): the course/cohort join is canonical.**
+`app.student_tutor_link` carries the personal relation; `app.student.tutor_id`
+is retired. Additionally: an admin must be able to see which tutor is home and
+which are guests for any student.
+
+What landed:
+
+| | |
+|---|---|
+| `app.teaches_student(uuid)` | The course join, written **once**, mirroring `app.can_read_activity()`'s join exactly so the two cannot drift apart again |
+| `app.exercise_result` | `er_select_own_or_tutor_admin` → `er_select_own_or_teacher_admin`, using `teaches_student()` |
+| `app.progress_snapshots` | `ps_select_own_or_tutor_admin` → `ps_select_own_or_teacher_admin`, same predicate |
+| `app.student.tutor_id` | **DROPPED.** 2 student rows, 0 with a value; `createStudent`/`updateStudent` had zero callers and are deleted |
+| `app.student_tutor_link` | New (§73.1). One active home tutor per student enforced by a partial unique index; guest pool enforced in tauka-python, because a CHECK cannot count sibling rows |
+
+**The correction this entry needs, and the way it was found.** This entry says
+*"`exercise_result` alone keys on `app.student.tutor_id`"*. It does not.
+`app.progress_snapshots.ps_select_own_or_tutor_admin` carried a byte-identical
+predicate. The undercount surfaced because Postgres refused the DROP:
+
+```
+ERROR: 2BP01: cannot drop column tutor_id of table app.student because other
+objects depend on it
+DETAIL: policy ps_select_own_or_tutor_admin on table app.progress_snapshots
+       depends on column tutor_id of table app.student
+```
+
+Had the column merely been deprecated rather than dropped, that policy would
+have been left keying on a definition nothing else uses — **the exact drift this
+entry exists to end, surviving its own fix.** Dropping the column is what made
+the second policy findable; a `grep` over the conflict log would not have.
+
+**A deliberate non-widening.** `teaches_student()` does **not** consult
+`student_tutor_link`. A guest tutor is a teaching relationship, not a grant of
+read access to a student's exercise history, and widening that is a decision to
+take with `legal.md` open rather than a side effect of a migration.
+
+**The client comment that is now wrong is gone.**
+`SupabaseService.getRecentExerciseResults` carried a note saying to expect fewer
+rows than roster students because RLS and the roster query disagree. They agree
+now — both are the course join — and the note is removed in the same change.
+
+---
 
 ### CONFLICT-032: `learn_streak_days` has no writer at all, and `streak_days` is still the old incrementing counter — both were documented as client-derived
 - **Detected by:** tauka-flutter (phase 13 documentation audit, verified against the live database)
@@ -1149,3 +1388,57 @@ expired is very often the device that never comes back.
   "value": 0.0–1.0}}`, one entry per exercise, reference and note sections
   absent. The Dart model's `Map<String, bool>` field is now wrong in the other
   direction; it is read by nothing and was left alone rather than changed blind.
+
+---
+
+### CONFLICT-037: `OWNERS.md` documents a `feature_flag` read path that no code has ever contained
+- **Detected by:** tauka-flutter (resolving `dtw-speech-drills-plan.md` §14 decisions)
+- **Date:** 2026-08-25
+- **Type:** DOC_DRIFT
+- **Status:** **RESOLVED 2026-08-25** — the reader was built and the docs corrected
+
+**What the docs say.** `shared-db/OWNERS.md:118` lists `feature_flag` as
+"tauka-flutter reads all flags; admins write", and `OWNERS.md:183` is specific:
+
+> `app.feature_flag (name, enabled)` | tauka-flutter | TierGatingService reads on init.
+
+**What the code does.** Nothing. `grep -rn "featureFlag" tauka/lib --include=*.dart`
+returns hits only in `shared_db.dart` — the table-name constant at `:120` and a
+`FeatureFlag` model class at `:2040`. **No query anywhere reads the table.**
+`TierGatingService` does not touch it: it subscribes to `app.user_profiles` for
+realtime tier changes (`tierGatingService.dart:184-206`) and loads a local file
+bypass (`:215`). The column names in the OWNERS row are wrong as well — the table
+is `(key, status)`, not `(name, enabled)` (`db.sql:1465`).
+
+**Why it matters beyond tidiness.** `dtw-speech-drills-plan.md` §7.3 planned to
+ship a whole feature behind a `feature_flag` row *on the strength of this
+documentation*, describing it as "already read by the Flutter client on startup".
+That plan's phase 6 gate assumes the feature can be switched off without a
+release if the calibration distributions disappoint. **There is no switch.** The
+plan has been corrected and now carries this as its §14.5 open decision.
+
+**Also worth noting before anyone builds the reader:** `notify_me_count` on that
+table suggests it was designed for the web site's "coming soon / notify me" flow
+rather than as a runtime kill switch. Reusing it as one may be the wrong call
+even once a reader exists.
+
+**Resolved:** the reader was built —
+`tauka/lib/src/services/speech/feature_flags.dart`, the first and only thing in
+this project that queries the table. `OWNERS.md:183` corrected: the columns are
+`key`/`status`, not `name`/`enabled`, and `TierGatingService` does not read it.
+
+Two decisions worth carrying forward:
+
+* **It fails open.** A network error, a missing row, an unreadable response all
+  mean *not disabled*. The flag exists to turn something off deliberately, and
+  one that silently disabled a feature whenever Supabase hiccupped would take
+  speaking drills down for offline learners — most of them, in a product whose
+  premise is working offline.
+* **It is read once per session**, not per render. A kill switch is an
+  operational decision, not a per-frame check, and a network call inside the
+  §10.3 latency budget would be a bug.
+
+The `notify_me_count` column still shows this table was built for the web site's
+"coming soon" flow. Reusing it as a runtime switch is a slight stretch and was
+the cheapest correct option; if flags become load-bearing, they deserve their
+own table rather than sharing one with a marketing counter.
