@@ -8,7 +8,7 @@ from app.routes import (
     ai, messaging, calling,
     subscriptions, test, supporters, gifts, testimonials,
     referrals, account, tutor_portal, tasks, tutoring, payouts, commitments,
-    trust,
+    trust, auth, matching, lyric_annotation,
 )
 
 
@@ -49,6 +49,10 @@ app.add_middleware(
 
 # Existing routes
 app.include_router(ai.router, prefix="/ai")
+# Lyric annotation is deliberately a separate module from the chat path:
+# different rate-limit namespace, different ledger mode, and an overflow
+# path /ai/generate has no way to express.
+app.include_router(lyric_annotation.router, prefix="/ai")
 app.include_router(messaging.router, prefix="/messages")
 app.include_router(calling.router, prefix="/calls")
 
@@ -88,6 +92,18 @@ app.include_router(commitments.router, prefix="/commitments")
 
 # Trust (plan Phase 5a). Anonymous counters only — no flags, no user ids.
 app.include_router(trust.router, prefix="/trust")
+
+# Account provisioning — the server half of "signup happens on the web"
+# (2026-08-28). tauka-react-web creates the auth.users row through Supabase, then
+# calls POST /auth/provision to have the service role create app.user_profiles
+# and app.student. See app/routes/auth.py for why the split is where it is.
+app.include_router(auth.router, prefix="/auth")
+
+# Cohort matching (tutor-cohort-matching-plan.md Phases 3-4, backlog O-16).
+# Student-facing offers plus the admin's dry run. There is deliberately no
+# tutor-facing route: a tutor learns about a cohort when it exists, not while it
+# is being proposed.
+app.include_router(matching.router, prefix="/matching")
 
 # Externally-triggered scheduled jobs (Vercel Cron). Guarded by CRON_SECRET.
 app.include_router(tasks.router, prefix="/tasks")

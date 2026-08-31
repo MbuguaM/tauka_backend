@@ -34,6 +34,7 @@ DURATIONS = (25, 50)
 _DEFAULTS = {
     "booking.cancellation_window_hours": "24",
     "booking.horizon_days": "28",
+    "booking.max_reschedules": "2",
     "entitlement.intensive_one_to_one_per_cycle": "2",
 }
 
@@ -53,6 +54,12 @@ REFUSALS = {
     "no_such_session": "That booking no longer exists.",
     "not_cancellable": "That booking has already been cancelled or completed.",
     "not_yours": "That is not your booking.",
+    # §80.2. Deliberately separate from `not_cancellable` even though both mean
+    # "status is not booked": a student who tapped Reschedule should be told
+    # about rescheduling.
+    "not_reschedulable": "That booking can no longer be moved.",
+    "reschedule_limit": "This session has been moved as many times as it can be. "
+                        "Keep this time, or cancel it.",
 }
 
 
@@ -430,6 +437,89 @@ async def cancel(session_id: str, by_user: str, reason: str | None = None) -> di
             "Cancelled. This was inside the cancellation window, so the session "
             "was not returned to your balance."
         ),
+    }
+
+
+async def reschedule(session_id: str, starts_at: str, by_user: str,
+                     tutor_id: str | None = None,
+                     availability_id: str | None = None) -> dict:
+    """Move a booking. Spec §2.6: *"few taps, no punitive copy/messaging."*
+
+    **This is not cancel-then-book, and the difference is the whole feature.**
+    Composed from those two, a move made outside the cancellation window costs
+    the student a session — cancel does not refund there, and book consumes
+    again. `app.reschedule_one_to_one` does it in one transaction and **never
+    touches `app.session_entitlement`**: a reschedule is neither a grant nor a
+    spend, and a refund/consume pair would net to zero while making the ledger
+    unreadable for the one question it exists to answer.
+
+    WHAT IT DOES COST, AND WHY.
+
+    Moving a session from *inside* the window stamps `refund_forfeited` on it, so
+    cancelling it later never refunds. Without that, the window would stop
+    existing: book for tomorrow, move it to next month two hours before, then
+    cancel with thirty days' notice and be refunded in full — a late drop
+    laundered through a reschedule.
+
+    So the rule is: **you may always move a session; you may not convert a late
+    drop into an early one.** A tutor moving it costs the student nothing, on the
+    same reasoning `cancel` already uses — a student whose tutor rearranged has
+    done nothing wrong.
+
+    The response says whether the forfeit was taken. A student finds out at the
+    moment it happens, not later from a balance that did not move.
+    """
+    payload: dict = {
+        "p_session": session_id,
+        "p_at": starts_at,
+        "p_by": by_user,
+    }
+    # Sent only when moving tutors. Passing NULL explicitly is the same thing to
+    # the function, but an absent key keeps the RPC log readable about what was
+    # actually asked for.
+    if tutor_id:
+        payload["p_tutor"] = tutor_id
+    if availability_id:
+        payload["p_availability"] = availability_id
+
+    try:
+        result = db.schema("app").rpc("reschedule_one_to_one", payload).execute()
+    except Exception as exc:  # noqa: BLE001
+        word = _refusal_from(exc)
+        if word:
+            raise BookingRefused(word) from exc
+        logger.error("reschedule_one_to_one failed for %s: %s", session_id, exc)
+        raise
+
+    row = result.data if isinstance(result.data, dict) else {}
+    forfeited = bool(row.get("refund_forfeited"))
+    left = row.get("reschedules_left")
+
+    # Assembled here rather than in the client so the two facts a student needs
+    # — can I move it again, and did that cost me the refund — are stated
+    # together and cannot drift apart across two codebases.
+    parts = ["Moved."]
+    if forfeited:
+        parts.append(
+            "Because this was inside the cancellation window, cancelling it "
+            "later will not return it to your balance."
+        )
+    if isinstance(left, int):
+        parts.append(
+            "You can move it once more." if left == 1
+            else "This session cannot be moved again." if left == 0
+            else f"You can move it {left} more times."
+        )
+
+    return {
+        "rescheduled": True,
+        "session_id": session_id,
+        "scheduled_at": row.get("scheduled_at"),
+        "tutor_id": row.get("tutor_id"),
+        "rescheduled_count": row.get("rescheduled_count"),
+        "reschedules_left": left,
+        "refund_forfeited": forfeited,
+        "message": " ".join(parts),
     }
 
 

@@ -256,6 +256,34 @@ class TutorReferralLookupResponse(BaseModel):
     tutor_name: Optional[str] = None
 
 
+class ProvisionAccountRequest(BaseModel):
+    """Turn an authenticated `auth.users` row into a Tauka account.
+
+    **There is no `user_type` field, deliberately.** Provisioning always writes
+    `'student'`. Tutors are created by an admin because vetting, the tutor
+    agreement and payout onboarding all assume a human approved them — and an
+    endpoint any signed-in user can reach must not accept its own role.
+    """
+    first_name: Optional[str] = Field(None, max_length=120)
+    # L-005. False is a legitimate value and simply leaves `age_confirmed_at`
+    # null; the client is expected to refuse to submit without it, but the
+    # server does not pretend an unticked box is an attestation.
+    age_confirmed: bool = False
+    # Same shape as ClaimReferralRequest.code — the CHECK on
+    # app.tutor_referral_link.code is 4..64.
+    referral_code: Optional[str] = Field(None, min_length=4, max_length=64)
+    source_platform: Optional[str] = Field(None, max_length=32)
+
+
+class ProvisionAccountResponse(BaseModel):
+    user_id: str
+    profile_created: bool
+    student_created: bool
+    already_provisioned: bool
+    user_type: str
+    referral: Optional[dict] = None
+
+
 class ClaimReferralRequest(BaseModel):
     # Matches the CHECK on app.tutor_referral_link.code (4..64).
     code: str = Field(..., min_length=4, max_length=64)
@@ -396,3 +424,57 @@ class TrustWarningRequest(BaseModel):
     """
     pattern_class: str = Field(..., min_length=1, max_length=40)
     proceeded: bool = False
+
+
+# ── Phase 6 — handoff, standing, feedback (spec §1.6 / §1.7) ──────────────────
+
+class BeginHandoffRequest(BaseModel):
+    """Start a warm handoff for one student, or for every student of one tutor.
+
+    Exactly one of `student_id` / `tutor_id` — validated in the route rather
+    than here so the error reads as a 400 about the request, not a 422 about a
+    model the caller never sees.
+    """
+    student_id: str | None = None
+    tutor_id: str | None = None
+    reason: str = Field(default="tutor_inactive", max_length=40)
+
+
+class CompleteHandoffRequest(BaseModel):
+    """Name the replacement. **There is no "pick one for me" mode**: §1.7 wants
+    the guest pool preferred "where possible", which is a judgement, and the
+    matcher that would make it automatically does not exist (O-16)."""
+    student_id: str
+    new_tutor_id: str
+
+
+# NOTE: there is no `TutorFeedbackRequest`. Submitting feedback is a **direct
+# client insert** under `tutor_feedback_insert_own`, mirroring
+# `app.course_correction` and `app.content_approval_requests` — the two closest
+# analogues, both "a tutor submits something for admin review", both written
+# from Flutter. Routing it through here would add a second writer to a table
+# whose RLS already expresses the rule exactly. Only **triage** is served from
+# Python, because it is admin-only and the web dashboard consumes it.
+
+
+class TriageFeedbackRequest(BaseModel):
+    """An admin's verdict on one piece of feedback."""
+    status: str = Field(..., max_length=20)
+    admin_note: str | None = Field(default=None, max_length=2000)
+
+
+class RescheduleSessionRequest(BaseModel):
+    """Move a booking (plan Phase 7, spec §2.6).
+
+    `tutor_id` is optional and usually absent — most reschedules keep the same
+    tutor. When present the RPC re-checks eligibility, because a roster can
+    change between the booking and the move (a §1.7 handoff).
+
+    Send `starts_at` **verbatim** from `booking/options`. The server did the
+    timezone arithmetic when it expanded the availability window; a
+    reconstructed instant will eventually be a different instant.
+    """
+    session_id: str
+    starts_at: str
+    tutor_id: str | None = None
+    availability_id: str | None = None

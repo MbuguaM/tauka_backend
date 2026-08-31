@@ -77,12 +77,14 @@ async def run_daily_tasks(authorization: str | None = Header(default=None)):
 
     from app.tasks.activity_retention import run_activity_retention_task
     from app.tasks.gift_lifecycle import run_gift_lifecycle
+    from app.tasks.intake_cycle import run_intake_cycle
     from app.tasks.milestone_check import run_milestone_check
     from app.tasks.commitment_lifecycle import (
         report_unmarked_sessions,
         run_commitment_lifecycle,
     )
     from app.tasks.payout_cycle import run_payout_cycle
+    from app.tasks.standing_cycle import run_standing_cycle
     from app.tasks.testimonial_outreach import run_testimonial_outreach
 
     jobs = (
@@ -100,6 +102,18 @@ async def run_daily_tasks(authorization: str | None = Header(default=None)):
         # Reports only. A 1-on-1 becomes payable when its tutor marks it,
         # never when a job notices it is in the past.
         ("unmarked_sessions", report_unmarked_sessions),
+        # Monthly behind its own `standing.cadence_day`. AFTER payout_cycle
+        # deliberately: both count the same delivered sessions, and running
+        # standing second means a month's deliveries are already settled by the
+        # time promotion reads them. It writes only on a change of verdict.
+        ("standing_cycle", run_standing_cycle),
+        # Cohort matching. Runs the offer-expiry sweep and the cycle close
+        # DAILY, and the matcher itself only on `match.intake_days` (1st and
+        # 15th) — a 48-hour hold that is only swept twice a month is not a
+        # deadline. Placed after standing_cycle because it can create cohorts,
+        # and a cohort formed today has no delivered sessions for either of the
+        # jobs above to count.
+        ("intake_cycle", run_intake_cycle),
         # Last on purpose: it is the only job here that deletes anything, and
         # nothing else depends on it having run. A day late costs storage; a
         # mail job skipped because deletion threw costs a person their email.

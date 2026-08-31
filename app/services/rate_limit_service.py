@@ -21,6 +21,16 @@ _PLANS: dict[str, dict] = {
         "daily_token_limit": 10_000,
         "monthly_token_limit": 200_000,
     },
+    # Lyric annotation is content production, not a chat turn: one song plus
+    # the course contents is ~15k tokens, which is nearly twice the whole
+    # `deepseek` daily budget. Keyed by the tutor who runs it so one account
+    # cannot run the bill up unbounded. Do NOT raise the `deepseek` plan to fit
+    # this — that is the student chat allowance.
+    "lyric_annotation": {
+        "requests_per_minute": 60,
+        "daily_token_limit": 250_000,
+        "monthly_token_limit": 3_000_000,
+    },
     # Messaging uses character count as a proxy for "tokens"
     "messaging": {
         "requests_per_minute": 20,

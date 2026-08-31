@@ -200,30 +200,78 @@ async def call_openai_image_translation(
 # DeepSeek  (OpenAI-compatible API)
 # ---------------------------------------------------------------------------
 
-async def _call_deepseek(messages: list[dict]) -> str:
+async def _call_deepseek(
+    messages: list[dict],
+    *,
+    max_tokens: int | None = None,
+    timeout: float = 60,
+    temperature: float | None = None,
+    json_object: bool = False,
+) -> tuple[str, str | None]:
+    """Call deepseek-chat. Returns ``(content, finish_reason)``.
+
+    The keyword arguments exist for lyric annotation, which is a different shape
+    of request from a chat turn and was silently broken without them:
+
+    * **max_tokens** — omitted, the provider default of 4096 applies. A whole
+      annotated song is 6,000+ output tokens, so the response came back cut in
+      half with no error.
+    * **timeout** — 60s is right for a chat reply and not enough for a song.
+    * **finish_reason** — the caller cannot otherwise tell a complete answer
+      from a truncated one. `length` is what drives the split-on-overflow path;
+      without it, truncation looks like a model that dropped half the lines.
+    """
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}",
         "Content-Type": "application/json",
     }
-    payload = {"model": "deepseek-chat", "messages": messages}
+    payload: dict = {"model": "deepseek-chat", "messages": messages}
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if json_object:
+        payload["response_format"] = {"type": "json_object"}
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         res = await client.post(url, json=payload, headers=headers)
         res.raise_for_status()
 
     body = res.json()
     _record_openai_usage(body, "deepseek-chat")
-    return body["choices"][0]["message"]["content"]
+    choice = body["choices"][0]
+    return choice["message"]["content"], choice.get("finish_reason")
+
+
+async def call_deepseek_annotate(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int = 8000,
+    timeout: float = 300,
+) -> tuple[str, str | None]:
+    """One lyric-annotation request. Deterministic, bounded, and honest about
+    running out of room."""
+    return await _call_deepseek(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": user}],
+        max_tokens=max_tokens,
+        timeout=timeout,
+        temperature=0,
+        json_object=True,
+    )
 
 
 async def call_deepseek_chat(prompt: str) -> str:
-    return await _call_deepseek([{"role": "user", "content": prompt}])
+    content, _ = await _call_deepseek([{"role": "user", "content": prompt}])
+    return content
 
 
 async def call_deepseek_translate(text: str, target_language: str) -> str:
     prompt = _build_translation_prompt(text, target_language)
-    return await _call_deepseek([{"role": "user", "content": prompt}])
+    content, _ = await _call_deepseek([{"role": "user", "content": prompt}])
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -338,10 +386,11 @@ async def call_ai(
                  {"role": "user", "content": prompt}]
             )
         if provider == "deepseek":
-            return await _call_deepseek(
+            content, _ = await _call_deepseek(
                 [{"role": "system", "content": system},
                  {"role": "user", "content": prompt}]
             )
+            return content
         if provider == "gemini":
             # This Gemini payload shape (v1beta generateContent with bare
             # `contents`) carries no system role, so the instructions are

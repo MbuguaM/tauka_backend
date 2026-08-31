@@ -15,12 +15,15 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.dependencies import get_current_user, require_admin, require_tutor
 from app.models.schemas import (
+    BeginHandoffRequest,
     BookSessionRequest,
     CancelSessionRequest,
+    CompleteHandoffRequest,
     CreateLinkRequest,
     MarkSessionRequest,
+    RescheduleSessionRequest,
 )
-from app.services import booking_service, matching_service
+from app.services import booking_service, handoff_service, matching_service
 from app.services.booking_service import BookingRefused
 
 logger = logging.getLogger(__name__)
@@ -204,6 +207,30 @@ async def cancel(req: CancelSessionRequest, user_id: str = Depends(get_current_u
                             detail={"reason": exc.reason, "message": exc.message})
 
 
+@router.post("/booking/reschedule")
+async def reschedule(req: RescheduleSessionRequest,
+                     user_id: str = Depends(get_current_user)):
+    """STUDENT or TUTOR — move a booking. Spec §2.6.
+
+    **Not cancel-then-book.** One transaction, and `app.session_entitlement` is
+    never touched: composed from cancel and book, a move made outside the
+    cancellation window silently costs the student the session, which is the
+    punitive outcome §2.6 exists to avoid.
+
+    Moving from *inside* the window stamps `refund_forfeited` on the session, so
+    a later cancellation does not refund. That is what stops a late drop being
+    laundered into an early one. The response says so at the moment it happens.
+    """
+    try:
+        return await booking_service.reschedule(
+            req.session_id, req.starts_at, user_id,
+            tutor_id=req.tutor_id, availability_id=req.availability_id)
+    except BookingRefused as exc:
+        status = 404 if exc.reason == "no_such_session" else 400
+        raise HTTPException(status_code=status,
+                            detail={"reason": exc.reason, "message": exc.message})
+
+
 @router.get("/booking/sessions")
 async def my_sessions(user_id: str = Depends(get_current_user)):
     """STUDENT — my 1-on-1 bookings, past and future."""
@@ -250,3 +277,93 @@ async def unmarked(user_id: str = Depends(require_admin)):
     this is the queue that stands between a tutor and their money.
     """
     return {"sessions": await booking_service.unmarked_sessions()}
+
+
+# ── Warm handoff (plan Phase 6, spec §1.7 / §2.5) ─────────────────────────────
+
+@router.get("/handoff")
+async def my_handoff(user_id: str = Depends(get_current_user)):
+    """STUDENT — is my tutor changing, and to whom?
+
+    Backs §2.5's "meet your new tutor" screen. Subject from the token, no
+    `{student_id}` in the path, same rule as every route in this file.
+
+    Returns `in_progress: false` when nothing is happening, which the client
+    needs in order to tell "no handoff" from "a handoff with no replacement
+    chosen yet" — those look identical if all you check is whether `incoming`
+    is null.
+    """
+    return handoff_service.status(user_id)
+
+
+@router.get("/handoff/candidates/{student_id}")
+async def handoff_candidates(
+    student_id: str,
+    _admin: str = Depends(require_admin),
+):
+    """ADMIN — ranked replacements, the student's own guest tutors first.
+
+    §1.7 wants the replacement drawn "from existing guest pool where possible,
+    to preserve some familiarity". Each candidate carries its own
+    `evaluate_assignment` verdict, so a name that would breach the
+    concentration cap says so next to itself rather than after being picked.
+    """
+    return handoff_service.propose_replacement(student_id)
+
+
+@router.post("/handoff/begin")
+async def begin_handoff(
+    req: BeginHandoffRequest,
+    _admin: str = Depends(require_admin),
+):
+    """ADMIN — `active → handoff_pending`, for one student or a whole tutor.
+
+    The tutor form is the realistic one: somebody goes on leave and every
+    student they are home to moves at once. Per-student failures are counted and
+    returned rather than aborting the sweep.
+    """
+    if bool(req.student_id) == bool(req.tutor_id):
+        raise HTTPException(
+            status_code=400,
+            detail="give exactly one of student_id or tutor_id")
+    try:
+        if req.tutor_id:
+            return await handoff_service.begin_for_tutor(req.tutor_id, req.reason)
+        return await handoff_service.begin(req.student_id, req.reason)
+    except handoff_service.HandoffRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/handoff/complete")
+async def complete_handoff(
+    req: CompleteHandoffRequest,
+    _admin: str = Depends(require_admin),
+):
+    """ADMIN — `handoff_pending → reassigned`, and a new home link.
+
+    409 on refusal, not 400: the request is well-formed and the *state* is
+    wrong, which is a different thing for a caller to handle.
+
+    The response carries `progress_access`. Read it — a handoff can succeed and
+    still leave the incoming tutor unable to see any of the student's history,
+    because history is gated on the course join and a handoff does not write a
+    course assignment.
+    """
+    try:
+        return await handoff_service.complete(req.student_id, req.new_tutor_id)
+    except handoff_service.HandoffRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/handoff/cancel")
+async def cancel_handoff(
+    req: BeginHandoffRequest,
+    _admin: str = Depends(require_admin),
+):
+    """ADMIN — the tutor came back. `handoff_pending → active`."""
+    if not req.student_id:
+        raise HTTPException(status_code=400, detail="student_id is required")
+    try:
+        return await handoff_service.cancel(req.student_id)
+    except handoff_service.HandoffRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc))

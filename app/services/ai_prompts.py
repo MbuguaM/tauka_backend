@@ -41,6 +41,14 @@ from __future__ import annotations
 import secrets
 
 # The modes whose framing is built here rather than accepted from the client.
+#
+# This tuple drives the /ai/generate route: a mode listed here is one that route
+# will accept and dispatch through build_framed_prompt(). "lyric_annotate" is
+# deliberately NOT in it. It is framed — it uses the same nonce fence, and its
+# fence is covered by tests/test_lyric_annotation.py — but it needs a line list
+# and the course contents, which /ai/generate has no way to supply. Listing it
+# made `POST /ai/generate {"mode": "lyric_annotate"}` reachable and then raise,
+# turning a 400 into a 500. It lives behind POST /ai/lyrics/annotate instead.
 FRAMED_MODES = ("lesson_explain", "analyse_amharic")
 
 # Generous, but bounded. Unbounded content is both an injection surface and an
@@ -49,6 +57,15 @@ FRAMED_MODES = ("lesson_explain", "analyse_amharic")
 MAX_QUOTE = 4000
 MAX_PASSAGE = 8000
 MAX_CONTEXT = 300
+# A song, not a chat turn. 80 lines is the longest in the catalogue.
+MAX_LYRICS = 12_000
+# The course contents, flattened to unit/note titles before it gets here.
+MAX_TOC = 20_000
+
+# Bumped whenever the wording below changes. Written into each file's
+# provenance — a prompt change that does not bump this makes every line
+# annotated under it unreproducible.
+ANNOTATION_PROMPT_VERSION = "la-1"
 
 
 def _nonce() -> str:
@@ -141,6 +158,62 @@ def build_analyse_amharic(message: str) -> tuple[str, str]:
         "suggest a reply."
     )
     return _system(nonce, task), _fence(nonce, "MESSAGE", message[:MAX_QUOTE])
+
+
+def build_lyric_annotate(lines: list[str], song_title: str,
+                         course_contents: str) -> tuple[str, str]:
+    """Annotate song lyrics, and point each word at where its grammar is taught.
+
+    Returns ``(system, user)``.
+
+    **Song lyrics are third-party text, pasted by a tutor, sent verbatim.** That
+    is the same trust category as :func:`build_analyse_amharic` — whose
+    docstring already calls it the mode with the most exposure — and a lyric
+    line that reads as an instruction is one chorus away. So this reuses the
+    existing nonce fence rather than growing a second, weaker one.
+
+    The course contents are fenced too. They are our own document rather than
+    third-party, but the fence marks "data, not instructions", and that is true
+    of them as well.
+    """
+    nonce = _nonce()
+    task = "\n".join([
+        "annotate every line of the song. Return ONLY a JSON object of the "
+        'form {"lines": [...]}, one entry per line, in the order given.',
+        "",
+        "Each entry has:",
+        '  "original_phrase"     the line, copied back byte for byte',
+        '  "english_translation" a natural English rendering',
+        '  "implied_meaning"     what it actually means, where that differs',
+        '  "word_breakdown"      one entry per whitespace-separated word, in '
+        "order, including a word that repeats",
+        "",
+        "Each word entry has:",
+        '  "word"            the word exactly as it appears',
+        '  "literal_meaning" its meaning on its own',
+        '  "part_of_speech"  its grammar, compositional where that applies, '
+        'e.g. "Noun + Possessive + Accusative" or "Verb (Past perfect)"',
+        '  "course_ref"      {"unit": N, "note": "N.M"} naming the '
+        "grammatical note in COURSE CONTENTS that teaches this word's grammar, "
+        "omitted when none does",
+        '  "confidence"      "low" ONLY where you are unsure of the meaning',
+        "",
+        "Rules that matter:",
+        "- Copy each line back exactly. Do not correct spelling, normalise "
+        "punctuation, or transliterate.",
+        "- One word_breakdown entry per whitespace-separated word. A word that "
+        "appears twice in a line gets two entries.",
+        "- Only cite a unit and note that appear in COURSE CONTENTS. Never "
+        "invent one. Omit course_ref rather than guess at it.",
+        '- Mark uncertainty with "confidence": "low" on that word. Never hedge '
+        "inside literal_meaning — a hedge there ships to a learner as fact.",
+    ])
+    parts = [
+        _fence(nonce, "COURSE CONTENTS", course_contents[:MAX_TOC]),
+        _fence(nonce, "SONG TITLE", song_title[:200]),
+        _fence(nonce, "LYRIC LINES", "\n".join(lines)[:MAX_LYRICS]),
+    ]
+    return _system(nonce, task), "\n\n".join(parts)
 
 
 def build_framed_prompt(

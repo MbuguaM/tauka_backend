@@ -367,9 +367,17 @@ async def test_booking_a_non_standard_duration_never_reaches_the_database():
 # ---------------------------------------------------------------------------
 
 def _roster_db(links):
+    """Phase 6 changed the shape of this query and this helper with it.
+
+    `get_roster` used to filter `.eq("state", "active")`; it now filters
+    `.in_("state", ["active", "handoff_pending"])`, because filtering to
+    `active` alone made a home tutor vanish from the student's own screen the
+    moment a handoff began — see `test_handoff.py`. The mock chain has to match
+    the real one or it asserts against a query nobody makes.
+    """
     fake = MagicMock()
     fake.schema.return_value.table.return_value.select.return_value.eq.return_value \
-        .eq.return_value.order.return_value.execute.return_value = MagicMock(data=links)
+        .in_.return_value.order.return_value.execute.return_value = MagicMock(data=links)
     return fake
 
 

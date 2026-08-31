@@ -18,11 +18,12 @@
 > when `CONFLICT-013` and `CONFLICT-014` were each in use twice. The older,
 > resolved entry of each pair was renumbered — `playlist_id` 013 → **024**,
 > `dict_url` 014 → **025** — and both carry a "formerly" line so an older
-> reference still resolves. **The next free number is 041.**
+> reference still resolves. ~~**The next free number is 041.**~~ *(stale — see the corrected line below)*
 > (It read 037 until 2026-08-27, by which time CONFLICT-037 had been filed —
 > the next entry would have been the third duplicate this banner exists to
 > prevent. Whoever adds an entry: bump this line in the same edit.)
-> Last updated by: tauka-flutter on 2026-08-27
+> **The next free number is 049.**
+> Last updated by: tauka-python on 2026-08-28 (CONFLICT-048)
 
 ---
 
@@ -37,6 +38,462 @@ When you discover a duplicate table, mismatched column type, missing table, brok
 ---
 
 ## Active Conflicts
+
+### CONFLICT-048: tauka-python writes two tables whose docs said "tauka-flutter only" — REGISTERED, not resolved by fixing
+
+**Filed 2026-08-28 by tauka-python (migration §86, backlog O-16).**
+**Status: REGISTERED. This is the intended design, logged so it is not later
+found and "corrected".**
+
+`tutor-cohort-matching-plan.md` §7 puts the cohort matcher in tauka-python.
+§5.0 of the same plan settled that **tauka-flutter owns the cohort domain and
+its DDL** — four canonical documents said so and one dissented, and the database
+settled it: every write policy on all four cohort tables is `app.is_admin()`,
+an *authenticated user* predicate, not a service-role bypass. They were built
+for an admin using the Flutter admin dashboard.
+
+**But the matcher is the thing that forms cohorts.** So as of §86,
+**tauka-python INSERTs `app.cohorts` and `app.cohort_memberships`** through the
+service role. That is exactly the `app.student.tier` pattern — DDL owned by one
+project, one specific write path owned by another — and §5.0 required it be
+"an explicit shared-write entry in `OWNERS.md` naming the columns and the
+writer, rather than tauka-python quietly writing a table whose docs say
+'tauka-flutter only'". This entry and the two rows in OWNERS.md are that.
+
+**The columns, exhaustively:**
+
+| Table | tauka-python writes | tauka-python must NEVER write |
+|---|---|---|
+| `app.cohorts` | INSERT at formation; UPDATE of `status`, `band_lesson_low`, `band_lesson_high`, `intake_cycle` | `health_score` / `health_status` / `health_computed_at` — the `cohort-health` function's (§84); `tutor_id` after formation — a tutor change is a §1.7 **handoff**, not a rematch; `recording_consent` — the members' answer, not the platform's |
+| `app.cohort_memberships` | INSERT on offer acceptance; UPDATE of `status`, `left_at`, `removal_reason` | everything else |
+
+**No RLS policy was added, and none should be.** The write policies are
+`app.is_admin()`; the service role bypasses RLS entirely. A policy naming
+tauka-python would widen the **authenticated** surface to grant something the
+service role already has — which is precisely how a shared-write path becomes a
+client-write path by accident.
+
+**A cohort is created with zero members.** Membership is what *accepting an
+offer* creates (`offer_service.accept`). If a future change writes memberships
+at formation it will have placed people who were never asked, and the difference
+between an offer and an assignment will have been lost in a refactor.
+
+**Related, and deliberately NOT done:** `app.match_offer` has no client write
+policy at all. See `tauka/shared-db/domains/cohort_matching.md` §2.
+
+---
+
+### CONFLICT-047: language exchange has TWO tables, and the client and the matcher use different ones
+- **Detected by:** tauka-flutter (plan O-20, repairing `match-exchange-partner`)
+- **Date:** 2026-08-28
+- **Type:** DUPLICATE_OBJECT + CROSS_PROJECT_MISMATCH
+- **Status:** **OPEN — and it blocks the repair of `match-exchange-partner`.**
+
+**Both tables exist in production. Both hold 0 rows. They model the same thing.**
+
+| Table | Domain | Shape | Who uses it |
+|---|---|---|---|
+| `app.langexchange` | social_media | `id, lang_a, lang_b, user_a, user_b, deleted_at` | **tauka-flutter** — four queries plus an RPC in `supabaseService.dart:2443–2546` |
+| `app.language_exchange_match` | broadcast | `id, user_a_id, user_b_id, conversation_id, matched_at, rematch_available_at, status, ended_at, ended_by` | **the `match-exchange-partner` Edge Function**, and a Dart model at `shared_db.dart:1453` that nothing calls |
+
+**So the app writes and reads one table while the matcher writes the other.**
+Deploying `match-exchange-partner` as written would produce matches the app
+cannot see, in a table nothing reads, and neither side would error — the failure
+would look like "the matcher found nobody".
+
+**This compounds CONFLICT-021, which is still open from 2026-08-14.**
+`language_exchange_match.conversation_id` is supposed to point at a real
+`app.conversations` row, but `conversations_type_check` rejects `'exchange'`,
+which is the type the client sends. So even the richer of the two tables cannot
+be populated end to end.
+
+**And the repair's own premise was wrong.** `match-exchange-partner` selects five
+`user_profiles` columns that do not exist. Three of them should never be added
+there:
+
+| Column the function wants | Where that data already belongs |
+|---|---|
+| `native_language`, `target_language` | `app.user_languages`, whose `type` is already `'known'` \| `'target'` with an `is_primary` flag — exactly this shape |
+| `cohort_id` | `app.cohort_memberships (cohort_id, user_id, status)` — the source of truth. A column here would be a second one, and they would drift |
+| `timezone_offset`, `is_exchange_visible` | **genuinely absent.** These two are the only real additions |
+
+Adding all five would give a user's languages a **fourth** representation —
+after `user_profiles.known_languages` (jsonb, 1 row), `app.user_languages`
+(normalised, 0 rows, referenced by no Dart code) and `app.langexchange`'s
+`lang_a`/`lang_b`.
+
+**Why this is not being fixed here.** Every option is a product decision:
+
+- **Which table wins.** `langexchange` has the working client code;
+  `language_exchange_match` has the lifecycle columns (`status`,
+  `rematch_available_at`, `ended_by`) that §2.6's rematch rules need. Keeping
+  both is the only option that is definitely wrong.
+- **Whether `user_languages` gets adopted or dropped.** `language_registry.md`
+  already says it is unused and "safe to drop if that is never built". A matcher
+  is exactly the thing that would justify building it.
+- **CONFLICT-021 must be settled first** or the matched pair cannot get a
+  conversation.
+
+`FEATURE_STATUS.language_exchange` is `'coming'` and the feature is Phase 3, so
+nothing is broken today by leaving it. What would be broken is repairing the
+function into the middle of this.
+
+---
+
+### CONFLICT-046: all seven Edge Functions were written against a schema that does not exist, and none was ever deployed
+- **Detected by:** tauka-flutter (plan O-20 audit)
+- **Date:** 2026-08-28
+- **Type:** FL-010 / PHANTOM_SCHEMA
+- **Status:** **PARTIALLY RESOLVED.** Three deleted, **two rebuilt and
+  deployed**, two blocked — see the table.
+
+> **Update 2026-08-28 (cohort-health).** Repairing it found a sixth defect the
+> audit had not reached: it wrote two columns that did not exist. It also
+> had **no caller check at all** while writing `app.cohorts` with the service
+> role — and `cohorts_write_admin` is that table's only write policy, so any
+> signed-in user could have caused an admin-only write. The rewrite checks
+> `app.admin_users`, the same table `require_admin` and `app.is_admin()` use.
+> **Auditing a function against the schema does not audit its authorisation**;
+> that had to be looked at separately, and was nearly missed.
+
+**`payroll` was believed to be the only casualty** (CONFLICT-040). It was the
+only one anybody had checked. Audited against `information_schema`:
+
+| Function | Objects it names that do not exist | Live caller | Outcome |
+|---|---|---|---|
+| `delete-account` | `exercise_sessions`, `session_ratings`, `session_participants`, `profiles`; and `ai_message`, which exists but has **no `user_id`** (CONFLICT-001) | `settings_page.dart:133` | **REBUILT** on `app.delete_user_account()` (§82) and **DEPLOYED** as v1 |
+| `payroll` | `profiles`, `video_sessions`, `tutor_rates` | none | **DELETED** (CONFLICT-040) |
+| `check-sessions` | `video_sessions`, `session_participants` | none | **DELETED** |
+| `session-recording` | `video_sessions`, `session_participants` | Daily.co webhook | **DELETED** — L-004 unsettled |
+| `cohort-health` | `exercise_sessions`, `session_participants`, `video_sessions`, and it wrote `cohorts.health_score` / `.health_status`, **neither of which was a column** — six defects, not three | `cohort_list_page.dart:34` | **REPAIRED and DEPLOYED** v1, 2026-08-28. Columns added by §84 (plus `health_computed_at`, which was not in the original design) |
+| `match-exchange-partner` | tables fine; selects **five `user_profiles` columns, none of which exists** — and three of the five duplicate data that already has a home | `language_exchange_page.dart:38` | **BLOCKED on a product decision, not a migration — CONFLICT-047.** It also targets the wrong one of two duplicate exchange tables |
+| `send-push` | none — schema clean | server-side only | **BLOCKED** on Firebase secrets |
+
+**The dead names are consistent**: `video_sessions` and `session_participants`,
+where production has `video_session` and `video_session_participant`. Six
+functions written against one imagined schema.
+
+**Two of these are not repairs, they are feature builds.** `cohort-health` needs
+two new columns on `app.cohorts`; `match-exchange-partner` needs five on
+`app.user_profiles`. Language exchange has a `language_exchange_match` table and
+no profile fields to match on — the matching feature was never schema-backed.
+Calling either a "repair" would understate what is being authorised.
+
+**Why none of it was caught.** Not one of the seven was ever deployed, so not one
+ever ran. The same shape as CONFLICT-044 (`require_admin`) in the same audit:
+**code that nothing executes is unobserved, not verified** — and an undeployed
+Edge Function is the purest form of it, because there is not even a 403 to notice.
+
+**Method that found it, worth reusing:** extract every `.from('…')` and
+`.select('…')` in a function and check the names against
+`information_schema.columns`, not just `information_schema.tables`.
+`match-exchange-partner` passed the table check and failed the column check —
+it was on the "clean, deployable" list until the columns were checked.
+
+---
+
+### CONFLICT-045: §64 renamed the tier values but not the column DEFAULTS, and two of the defaults are values their own CHECK rejects
+- **Detected by:** tauka-flutter (backlog cleanup pass, plan O-12)
+- **Date:** 2026-08-28
+- **Type:** PARTIAL_RENAME / LIVE_OUTAGE
+- **Status:** **RESOLVED 2026-08-28** — §81.1 and §81.2.
+
+**What §64 did and did not do.** It renamed the tier values to
+`free_tier | learner_tier | tutor_tier | intensive_tier`, rewrote every CHECK
+constraint, and rewrote every stored value. It did not rewrite the column
+DEFAULTS. Three survived with the old spelling:
+
+| Column | DEFAULT was | Its CHECK | Effect |
+|---|---|---|---|
+| `app.user_profiles.subscription_tier` | `'free'` | `*_tier` OR NULL | **every INSERT omitting it failed** |
+| `app.student.tier` | `'free'` | `*_tier`, no NULL escape | **every INSERT omitting it failed** |
+| `app.gift_subscriptions.tier` | `'tutor'` | **none at all** | wrote a dead, role-ambiguous value |
+
+**Verified, not inferred.** Rollback-safe probes against production:
+
+```
+ERROR: new row for relation "user_profiles" violates check constraint
+       "user_profiles_subscription_tier_check"
+ERROR: new row for relation "student" violates check constraint
+       "student_tier_check"
+```
+
+**Consequence: no new account could complete onboarding.**
+`_ensureUserProfile` (`supabaseService.dart:3619`) inserts
+`{id, user_type, first_name}`; `upsertStudent` (`:3703`) inserts `{id}`. Neither
+names a tier, and no trigger on `auth.users` creates a profile — those two are
+the only creation path, since the web `/signup` creates nothing (O-14). Both call
+sites catch the exception and return `false`, so it failed **silently**.
+
+**This is CONFLICT-036's stated hazard, arriving.** `CLAUDE.md` carries it
+verbatim: *"a partial rename recreates it, so tier values change in the database
+and all three projects together or not at all."* The code half of §64 was
+complete — no bare tier string survives in any of the three projects. Only the
+defaults were missed.
+
+**Why four audits missed it.** §71.3 reconciled `db.sql` against production by
+comparing **column lists**, and found two real divergences in this very table
+(`created_at`, `role` — plan O-12). CONFLICT-036 checked **stored values**, and
+found the `min_tier = 'tutor'` rows. A DEFAULT is neither a column nor a value
+nor a constraint, so both methods could be executed correctly and completely and
+still leave a table that rejects every insert.
+
+**The `gift_subscriptions` case is the instructive one.** Its default was the
+bare `'tutor'` — the exact string `CLAUDE.md` forbids comparing a tier against,
+because it collides with the tutor *role* — and it had no CHECK at all, so
+nothing would ever have rejected it. It stayed latent only because
+`gift_service.py:71` writes `'tutor_tier'` explicitly on the single insert path.
+It also had a doc telling the next writer to do the wrong thing:
+`test_referral.md:233` read *"uses canonical 'tutor' not 'tutor_tier'"*, true
+before §64 and an instruction to write a banned value after it. Fixed.
+
+**Method to carry forward:** after a value rename, check DEFAULTs as a separate
+pass. `SELECT table_name, column_name, column_default FROM
+information_schema.columns WHERE table_schema='app' AND column_default ~ '<old
+value>'` is the whole check, and it takes one query.
+
+---
+
+### CONFLICT-044: the API and the database disagree about who is an admin — and about who is a tutor — and the API's answer to both is "nobody"
+- **Detected by:** tauka-flutter (backlog audit)
+- **Date:** 2026-08-28
+- **Type:** AUTHZ_MISMATCH
+- **Status:** **RESOLVED 2026-08-28** — both gates repointed at the tables the
+  RLS policies already use. See *Resolution* at the end of this entry.
+
+> **Widened on fix.** The entry as first written named `require_admin` only.
+> `require_tutor`, ten lines above it in the same file, had the **identical**
+> defect and took 20 tutor-facing endpoints down with it. It is recorded below
+> rather than as a separate conflict because it is not a separate conflict — it
+> is the same one, and the original audit stopped at the first instance.
+
+**Two definitions of "admin", in two projects, and they were never reconciled.**
+
+| Layer | Predicate | Answers today |
+|---|---|---|
+| tauka-python `require_admin` | `app_metadata.role == 'admin'` | **nobody** — 0 of 6 users carry the key |
+| Postgres `app.is_admin()` | `app.admin_users WHERE id = auth.uid() AND deleted_at IS NULL` | **1 user**, a real one |
+| tauka-python `require_tutor` | `app_metadata.role == 'tutor'` | **nobody** — same empty key |
+| Postgres `app.is_tutor()` | `app.tutor WHERE id = auth.uid()` | **1 user**, a real one |
+
+Every user's `raw_app_meta_data` is `{"provider": "email", "providers":
+["email"]}`. No `role` key has ever been set on any account.
+
+**Consequence.** All 22 `require_admin`-gated FastAPI endpoints return 403 to
+every caller, including the actual admin: payout compute/approve/disburse, float
+read and append, `student_tutor_link` assignment and evaluation, unmarked-session
+review, all four handoff routes, both feedback-triage routes, commitment
+cancellation and lookup, trust warnings, question-bank loading, and testimonial
+approve/publish.
+
+**This is not the CONFLICT-033 shape** (two definitions of "my student" that both
+returned rows and disagreed at the edges). Here one definition returns rows and
+the other returns nothing at all — so it does not fail at the edges, it fails
+completely, for everyone, in one direction only.
+
+**Why it went unnoticed for four sessions.** Nothing exercises it — though not
+for the reason first recorded here. This entry originally said the admin routes
+were "unit-tested with the dependency overridden". They are not: there is no
+`dependency_overrides` anywhere in `tests/`, and no test issues a request to an
+admin route at all. `test_payouts`, `test_handoff` and `test_standing` call
+`payout_service`, `handoff_service` and `standing_service` **directly**. The gate
+is not stubbed out; it is simply never reached. That is a worse position than the
+one described, because a stub at least records that a gate exists.
+
+There is also no admin UI (O-26), so no human has called these endpoints. And
+O-08 recorded the situation as a *pending decision* with a recommendation, which
+reads as "works, spelling undecided".
+
+Same shape as **CONFLICT-041** one session earlier: an authz rule that survived
+because nothing read it. **A gate with no traffic is unobserved, not verified.**
+
+**One correction to O-08's wording, which matters.** The register says
+`user_metadata.role`. The code reads **`app_metadata`**. `user_metadata` is
+client-writable — a role check against it would let any user promote themselves
+to admin. `app_metadata` is service-role-only. The implementation is *safer* than
+the register describes; it is just empty. Anyone "fixing" this by writing the
+role into `user_metadata` would open exactly the hole the current code avoids.
+
+**Fix:** replace the metadata lookup in `app/dependencies.py:require_admin` with
+a read of `app.admin_users` (service role, `deleted_at IS NULL`), matching
+`app.is_admin()`. No migration; the table exists and is populated. Phase 0e's
+"decision" was already answered by the 40-odd RLS policies that depend on it.
+
+---
+
+**Resolution — 2026-08-28.**
+
+`app/dependencies.py` now reads the tables, not the metadata:
+
+| Gate | Reads | Matching policy function |
+|---|---|---|
+| `require_admin` | `app.admin_users` where `id = <sub>` and `deleted_at IS NULL` | `app.is_admin()` |
+| `require_tutor` | `app.tutor` where `id = <sub>` and `deleted_at IS NULL` | `app.is_tutor()` |
+
+Three things about the shape of the fix, because each was a choice:
+
+- **Both gates fail closed.** An exception reading the table produces 403, never
+  a grant. An unreachable database is not a permission.
+- **`deleted_at IS NULL` is applied to `app.tutor` even though `app.is_tutor()`
+  omits it.** That is a deliberate one-directional divergence: the API is
+  *stricter* than the policies, so a soft-deleted tutor is refused by the
+  endpoint and would have been admitted by RLS. The reverse would be the bug.
+  **`app.is_tutor()` not filtering `deleted_at` is a live latent issue in its own
+  right** — it is not fixed here because changing a SECURITY DEFINER function
+  every tutor RLS policy depends on is not a side effect of an API fix.
+- **`app.tutor.status` is deliberately not checked.** A suspended tutor must
+  still be able to read their own standing and payout settings; suspension is not
+  an account lock.
+
+**Regression cover:** `tauka_py_backend/tests/test_role_gates.py`, 8 tests,
+through `TestClient` on purpose — a gate is only tested where a request meets it.
+One of them asserts that neither gate calls `auth.admin.get_user_by_id`, so the
+metadata shape cannot quietly return.
+
+---
+
+### CONFLICT-043: three ARCHITECTURE_INDEX and OWNERS mirrors were five migrations stale, under a banner saying they were byte-identical
+- **Detected by:** tauka-flutter (implementation plan Phase 6, session start)
+- **Date:** 2026-08-28
+- **Type:** DOC_DRIFT
+- **Status:** **RESOLVED** — all three re-synced from root and verified.
+
+**What was found.** `tauka/`, `tauka_py_backend/` and `tauka-react-web/` each
+carry a copy of `shared-db/ARCHITECTURE_INDEX.md` and `shared-db/OWNERS.md`
+opening with:
+
+> MIRROR — DO NOT EDIT THIS FILE. … Everything below is a byte-for-byte copy of
+> it.
+
+All three were **dated 2026-06-01** and missing every migration from §73 to §78:
+no `student_tutor_link`, no `session_entitlement`, no `one_to_one_session`, no
+`enrollment_commitment`, no payout rail, no `trust_warning_stat`. The
+`tutor_management` row still listed `tutor_sessions`, `tutor_payroll` and
+`tutor_rates` — three tables that were dropped (CONFLICT-040, O-19, O-22).
+
+**Why this is worse than ordinary staleness.** The banner is an instruction not
+to doubt the file. A reader who opens the tauka-python mirror, sees "byte-for-byte
+copy", and writes a query against `app.tutor_sessions` has done everything right
+and is reading a table that does not exist.
+
+**Why it was missed.** The three `CONFLICT_LOG.md` mirrors were verified
+byte-identical on 2026-08-20 (CONFLICT-023) and again on 2026-08-27, and they
+were — the check was performed on the file the check was about. The index and
+owners files carry the same banner and were never in the loop.
+
+**Fix.** Re-synced from root. **The banner is only true if something re-copies
+it**: the session-end checklist item is "update `shared-db/`", and it must mean
+all three files in all four locations, not the one that was last discussed.
+
+---
+
+### CONFLICT-042: `app.anki_deck_assignment`'s INSERT policy constrains the assigner and not the assignee
+- **Detected by:** tauka-flutter (implementation plan Phase 6, §13.3)
+- **Date:** 2026-08-28
+- **Type:** RLS_SCOPE
+- **Status:** **RESOLVED 2026-08-28** (§81.4, plan O-28). The policy now reads:
+
+  ```sql
+  WITH CHECK (
+    assigned_by = auth.uid()
+    AND assigned_to_user_id IS NOT NULL
+    AND app.teaches_student(assigned_to_user_id)
+    AND assigned_to_class_id IS NULL
+  )
+  ```
+
+  `assigned_to_class_id` is required NULL: `teaches_student()` answers a question
+  about one student and cannot express class-level authority, so leaving the
+  class id unconstrained would have preserved a smaller hole of exactly the shape
+  being closed. Class assignment is therefore closed to tutors until a
+  class-level predicate exists — a deliberate narrowing, chosen over a partial
+  fix. Admins are unaffected: `admins manage all deck assignments` is a separate
+  permissive FOR ALL policy and is OR'd with this one.
+
+  **Found by declining to copy it.** §79 wrote `exercise_assignment` to the same
+  shape and deliberately did not reuse this policy; that refusal is what
+  surfaced the hole. Worth repeating as a method.
+
+**The policy.**
+
+```sql
+CREATE POLICY "tutors insert deck assignments"
+  ON app.anki_deck_assignment FOR INSERT
+  WITH CHECK (assigned_by = auth.uid());
+```
+
+`assigned_to_user_id` is unconstrained and there is no `app.is_tutor()` branch
+despite the policy's name, so **any authenticated user can assign a deck to any
+other user**. The check only stops you lying about who you are.
+
+**Found while writing `app.exercise_assignment`**, which plan §13.3 says to model
+on this table: *"`app.anki_deck_assignment` is already 'a tutor assigns study
+material to a student'. Mirror its shape rather than inventing a second
+pattern."* The **shape** was mirrored; the policy deliberately was not.
+`exercise_assignment_insert_tutor` requires
+`tutor_id = auth.uid() AND app.teaches_student(student_id)`.
+
+**Impact today:** low. 0 rows, and the worst outcome is an unexpected deck in
+someone's list. Logged rather than fixed because changing it is a change to a
+shipped feature's write path and belongs in its own change, with the Flutter
+caller checked first.
+
+**Recommended fix:** `WITH CHECK (assigned_by = auth.uid() AND
+app.teaches_student(assigned_to_user_id))`, plus a decision about
+`assigned_to_class_id`, which `teaches_student` cannot express.
+
+---
+
+### CONFLICT-041: `app.voice_recordings` let every tutor read every student's recordings
+- **Detected by:** tauka-flutter (implementation plan Phase 6, §13.1)
+- **Date:** 2026-08-28
+- **Type:** RLS_SCOPE
+- **Status:** **RESOLVED** in §79, same day, with developer authorisation.
+
+**The policy, as it stood in production:**
+
+```sql
+voice_recordings_select_own_or_tutor_admin
+  USING (user_id = auth.uid() OR app.is_tutor() OR app.is_admin())
+```
+
+**`app.is_tutor()` takes no argument.** It answers *"is the caller a tutor"*, not
+*"is this their student"*. So the middle branch is not a scope at all: any tutor
+could read any student's voice recordings, including students they had never
+taught and students on courses they had nothing to do with.
+
+**This is not the CONFLICT-033 shape.** That was two definitions of "my student"
+disagreeing — five policies, four using the course join and two (not one — the
+entry undercounted) using `student.tutor_id`. This is a policy with **no**
+definition of "my student" in it, in the heaviest data category the platform
+holds (`legal.md` L-006: a voice recording is a third category, and the L-001
+enrolment argument "does not obviously stretch to cover it").
+
+**The sibling table gets it right.** `speech_submission_tutor_read` uses
+`app.can_read_activity(user_id)` — the course join AND a paid tier. Both tables
+hold voice; they now carry the same rule:
+
+```sql
+voice_recordings_select_own_or_teacher_admin
+  USING (app.can_read_activity(user_id) OR app.is_admin())
+```
+
+Strictly narrower in every direction. Safe to apply: the table holds **0 rows**,
+so nothing was revoked from anyone who had data.
+
+**How it was found:** by reading the policy while scoping the tutor-mediated
+then-vs-now feature (§13.1), which is the first thing that has ever read this
+table. It had been live and unexercised, which is exactly the condition under
+which a too-wide policy attracts no attention.
+
+**The generalisation, now an anti-pattern in `ARCHITECTURE_INDEX.md`:** a
+row-level read rule whose only non-admin branch is a **subjectless** predicate
+is not scoped. `app.is_admin()` and `app.is_tutor()` are role checks; the
+subject-taking predicates are `app.teaches_student(uuid)` and
+`app.can_read_activity(uuid)`. Picking the role check by mistake produces a
+policy that reads as deliberate.
+
+---
 
 ### CONFLICT-040: two payout systems, and the older one was never wired up
 - **Detected by:** tauka-flutter (implementation plan Phase 3a, spec §1.4)
@@ -168,7 +625,21 @@ and `tauka-react-web/src/utilities/referral.js` reads `tref` and nothing else.
 - **Detected by:** tauka-flutter (implementation plan Phase 0a, reconciling `db.sql` against the live database)
 - **Date:** 2026-08-27
 - **Type:** BANNED_OBJECT_EXISTS + DOC_CONTRADICTION
-- **Status:** OPEN — logged, not fixed. Dropping it is DDL on production and is the developer's call.
+- **Status:** **RESOLVED 2026-08-28** — `DROP TABLE app.dictionary_entry` applied
+  (§81.3, plan O-09) with the developer's approval. Verified safe first: 0 rows,
+  no dependent object (its only FK pointed outward, to `app.dictionary`), and no
+  reader in any of the three projects.
+
+  **One trap left behind for the next audit.** `grep dictionary_entry` still hits
+  `tauka/lib/src/pages/main_pages/admin_dashboard.dart:543` — `case
+  'dictionary_entry':`. That is a content-governance queue ITEM-TYPE STRING
+  selecting an icon, not a reference to the table. It reads exactly like a
+  surviving reader and is not one.
+
+  `tauka/documentation.md:761` still describes the table as real and claims
+  `DictionaryStateManager` "loads entries from Supabase". That document was
+  already wrong before the drop; it is now wrong about an object that no longer
+  exists.
 
 **The anti-pattern.** `shared-db/ARCHITECTURE_INDEX.md:64`, in Global
 Anti-Patterns:

@@ -51,32 +51,68 @@ def get_current_user(
 
 
 async def require_tutor(user_id: str = Depends(get_current_user)) -> str:
-    """Raises 403 if the authenticated user does not have the tutor role."""
+    """Raises 403 if the authenticated user is not a tutor.
+
+    Source of truth is `app.tutor` — the same table `app.is_tutor()` reads, so
+    the API gate and every RLS policy agree on who a tutor is. It is NOT
+    `app_metadata.role`: no account in `auth.users` carries that key, so the
+    metadata check this replaced refused every caller including the one real
+    tutor. See O-08 in `openbacklog.md`.
+
+    `deleted_at IS NULL` is checked here even though `app.is_tutor()` omits it.
+    The divergence is deliberate and one-directional: the API is stricter than
+    the policies, so a soft-deleted tutor is refused rather than admitted.
+    `status` is deliberately NOT checked — a suspended tutor must still be able
+    to read their own standing and payout settings.
+    """
     from app.services.supabase_client import supabase_admin as db
     try:
-        user_result = db.auth.admin.get_user_by_id(user_id)
-        app_meta = (user_result.user.app_metadata or {}) if user_result and user_result.user else {}
-        role = app_meta.get("role", "")
-        if role != "tutor":
-            raise HTTPException(status_code=403, detail="Tutor access required")
-    except HTTPException:
-        raise
-    except Exception as exc:
+        result = (
+            db.schema("app")
+            .table("tutor")
+            .select("id")
+            .eq("id", user_id)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        # Fail closed. An unreachable database is not a grant.
         raise HTTPException(status_code=403, detail="Could not verify tutor role")
+    if not (result.data or []):
+        raise HTTPException(status_code=403, detail="Tutor access required")
     return user_id
 
 
 async def require_admin(user_id: str = Depends(get_current_user)) -> str:
-    """Raises 403 if the authenticated user does not have the admin role."""
+    """Raises 403 if the authenticated user is not an admin.
+
+    Source of truth is `app.admin_users` — the same table `app.is_admin()`
+    reads, and therefore the same table every admin RLS policy already enforces.
+
+    This replaced a check on `app_metadata.role == 'admin'`, which matched no
+    account in `auth.users` and so returned 403 to every caller of all 22
+    admin-gated endpoints while the database recognised one admin (O-08).
+
+    Note that the backlog entry described the old check as reading
+    `user_metadata`; it read `app_metadata`. The distinction is load-bearing —
+    `user_metadata` is client-writable, so a role check against it would let any
+    user promote themselves. Neither is used now.
+    """
     from app.services.supabase_client import supabase_admin as db
     try:
-        user_result = db.auth.admin.get_user_by_id(user_id)
-        app_meta = (user_result.user.app_metadata or {}) if user_result and user_result.user else {}
-        role = app_meta.get("role", "")
-        if role != "admin":
-            raise HTTPException(status_code=403, detail="Admin access required")
-    except HTTPException:
-        raise
-    except Exception:
+        result = (
+            db.schema("app")
+            .table("admin_users")
+            .select("id")
+            .eq("id", user_id)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        # Fail closed. An unreachable database is not a grant.
         raise HTTPException(status_code=403, detail="Could not verify admin role")
+    if not (result.data or []):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return user_id

@@ -198,6 +198,32 @@ Aligned with the DB schema — keyed on `conversation_id`, **not** a sender/rece
 Always call `messaging_service.get_or_create_student_conversation(s1, s2)` (which wraps
 the `app.get_or_create_student_conversation` RPC) to obtain the id before sending.
 
+## Lyric Annotation Service (`POST /ai/lyrics/annotate`)
+
+Separate from `/ai/generate` on purpose — `routes/lyric_annotation.py`,
+`services/lyric_annotation_service.py`, prompt in `ai_prompts.build_lyric_annotate`.
+
+- **Its own rate-limit namespace**, `lyric_annotation` (60 rpm, 250k tokens/day),
+  keyed by the tutor. Do **not** raise the `deepseek` plan to fit content
+  production — that is the student chat budget and raising it hands every student
+  a bigger allowance.
+- **Ledger rows carry `mode='lyric_annotate'`.** `app.ai_usage` had zero rows
+  before this feature, so these are the first it will ever hold. The stats page
+  must exclude non-chat modes explicitly, or every per-student number it shows
+  includes work no student did.
+- **`_call_deepseek` now takes `max_tokens`, `timeout` and returns
+  `(content, finish_reason)`.** Without an explicit `max_tokens` the provider
+  default of 4096 applies, and a whole annotated song is 6,000+ output tokens —
+  the response came back truncated with no error. `finish_reason == "length"` is
+  what drives the split-on-overflow path; without it, truncation is
+  indistinguishable from a model that dropped half the lines.
+- **One request per song, split only on overflow.** Chunking is not a quality
+  mechanism here — the corpus was generated whole-song — it is what happens when
+  a response runs out of room.
+- **`lyric_annotate` is NOT in `FRAMED_MODES`.** It uses the same nonce fence,
+  but that tuple drives `/ai/generate`'s dispatch, and listing it there made a
+  500 reachable from a client-supplied mode string.
+
 ## Rate Limiting
 
 Redis key namespace: `rate:{provider}:{user_id}:{minute}` and
@@ -240,7 +266,7 @@ This project OWNS the following domains and may CREATE/ALTER their tables:
 
 These tables are owned by other projects. You may SELECT from them but NEVER create, alter, drop, or write to them (except the shared-write rules below):
 
-- `user_profiles` (owned by tauka-flutter) — reads for user data and admin role checks
+- `user_profiles` (owned by tauka-flutter) — **we now CREATE the row** at signup (`POST /auth/provision`), with `user_type` hardcoded to `'student'` and `age_confirmed_at` written from the web's 18+ checkbox (L-005). Otherwise read-only: reads for user data and admin role checks. Never write `subscription_tier` — trigger-owned.
 - `admin_users` (owned by tauka-flutter) — reads for admin permission checks
 - `video_session` (owned by tauka-flutter) — reads `id`, `tutor_id`, `scheduled_at`, `status` for earnings calculation
 - `tutor` (owned by tauka-flutter) — reads `country_code` to select a rate card, and `created_at` for tenure. **`per_session_rate_cents` is ORPHANED (§75)** — held at 0 and read only as a fallback in `get_earnings`
@@ -250,7 +276,7 @@ These tables are owned by other projects. You may SELECT from them but NEVER cre
 
 ### What This Project Writes To (Shared-Write)
 
-- `student` (schema owned by tauka-flutter) — we may UPDATE the columns `tier`, `stripe_customer_id`, `stripe_subscription_id`, `subscription_status`, `current_period_end`, `active_gift_id` via service role. NEVER create, delete, or write any other columns on this table. The trigger `trg_sync_student_tier` automatically syncs `user_profiles.subscription_tier` — do NOT write that column directly.
+- `student` (schema owned by tauka-flutter) — **we now CREATE the row** at signup (`POST /auth/provision`, 2026-08-28: signup moved to tauka-react-web and this service provisions the rows). The insert carries **`id` only** — never `tier`, which the column default owns until billing changes it. We may also UPDATE `tier`, `stripe_customer_id`, `stripe_subscription_id`, `subscription_status`, `current_period_end`, `active_gift_id` via service role. NEVER delete, and never write any other columns. The trigger `trg_sync_student_tier` automatically syncs `user_profiles.subscription_tier` — do NOT write that column directly.
 
 ---
 

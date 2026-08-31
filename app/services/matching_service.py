@@ -255,11 +255,20 @@ async def get_roster(student_id: str) -> dict:
     field, because §2.1 asks for "visually distinct treatment (home tutor should
     read as primary/persistent, guest tutors as supporting)" and a client that
     has to partition the list itself will eventually forget to.
+
+    **`handoff_pending` is included, and it was not before (Phase 6).** This
+    query filtered `state = 'active'` alone, so the moment a handoff began the
+    student's home tutor disappeared from their own tutor screen and the roster
+    read as "no home tutor". That is precisely the silent swap §1.7 exists to
+    prevent, produced by the screen rather than by the state machine. A tutor in
+    `handoff_pending` is still teaching — `ended_at` is NULL and the CHECK
+    constraint enforces it — so they belong on the roster, flagged.
     """
     try:
         links = db.schema("app").table("student_tutor_link").select(
             "id, tutor_id, role, source, state, started_at"
-        ).eq("student_id", student_id).eq("state", "active").order("started_at").execute()
+        ).eq("student_id", student_id).in_(
+            "state", ["active", "handoff_pending"]).order("started_at").execute()
         rows = links.data or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("roster read failed for %s: %s", student_id, exc)
@@ -273,6 +282,10 @@ async def get_roster(student_id: str) -> dict:
             "link_id": row["id"],
             "tutor_id": row["tutor_id"],
             "role": row["role"],
+            "state": row["state"],
+            # The client renders "your tutor is changing" from this rather than
+            # comparing state strings itself. One flag, one meaning.
+            "handing_off": row["state"] == "handoff_pending",
             "since": row["started_at"],
             "name": " ".join(p for p in (d.get("first_name"), d.get("last_name")) if p) or None,
             "avatar_url": d.get("avatar_url"),
@@ -280,7 +293,13 @@ async def get_roster(student_id: str) -> dict:
             "language": d.get("language"),
         }
 
-    home = next((shape(r) for r in rows if r["role"] == "home"), None)
+    homes = [r for r in rows if r["role"] == "home"]
+    # The active home wins over a pending one during the warm-intro overlap,
+    # when the student briefly has both. `handoff.outgoing` still names the
+    # tutor who is leaving, so nobody vanishes — they stop being the headline.
+    home_row = next((r for r in homes if r["state"] == "active"), None) or \
+        next(iter(homes), None)
+    home = shape(home_row) if home_row else None
     guests = [shape(r) for r in rows if r["role"] == "guest"]
 
     cfg = _config(list(_DEFAULTS))
@@ -296,6 +315,9 @@ async def get_roster(student_id: str) -> dict:
         "guest_pool_complete": len(guests) >= min_guests,
         "min_guest_pool": min_guests,
         "supply_limited": supply < _as_int(cfg["match.min_tutor_supply"], 4),
+        # §1.7 / §2.5. Set whenever any home link is mid-transition, so the
+        # tutor screen can route to "meet your new tutor" without a second call.
+        "handoff_in_progress": any(r["state"] == "handoff_pending" for r in homes),
     }
 
 
@@ -509,19 +531,30 @@ def validate_link_set(student_id: str) -> dict:
 
     try:
         links = db.schema("app").table("student_tutor_link").select(
-            "tutor_id, role"
-        ).eq("student_id", student_id).eq("state", "active").execute()
+            "tutor_id, role, state"
+        ).eq("student_id", student_id).in_(
+            "state", ["active", "handoff_pending"]).execute()
         rows = links.data or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("link set read failed for %s: %s", student_id, exc)
         rows = []
 
-    homes = [r for r in rows if r["role"] == "home"]
-    guests = [r for r in rows if r["role"] == "guest"]
+    homes = [r for r in rows if r["role"] == "home" and r["state"] == "active"]
+    handing_off = [r for r in rows
+                   if r["role"] == "home" and r["state"] == "handoff_pending"]
+    guests = [r for r in rows if r["role"] == "guest" and r["state"] == "active"]
 
     problems: list[str] = []
     if len(homes) == 0:
-        problems.append("no active home tutor")
+        # **"Mid-handoff" is not "unassigned" (Phase 6).** Before this branch
+        # existed, beginning a handoff made the roster report "no active home
+        # tutor" — a problem an admin would try to fix by assigning a home
+        # tutor, which is the one thing that must not happen while a handoff is
+        # pending. The state is reported, not counted as a fault.
+        if handing_off:
+            problems.append("home tutor is mid-handoff — complete or cancel it")
+        else:
+            problems.append("no active home tutor")
     if len(guests) < min_guests:
         problems.append(f"guest pool is {len(guests)}, minimum {min_guests}")
 
@@ -533,6 +566,7 @@ def validate_link_set(student_id: str) -> dict:
         "enforced": binding,
         "problems": problems,
         "home_count": len(homes),
+        "handoff_pending_count": len(handing_off),
         "guest_count": len(guests),
         "min_guest_pool": min_guests,
         "supply": {"active_tutors": supply, "min_for_binding": min_supply},

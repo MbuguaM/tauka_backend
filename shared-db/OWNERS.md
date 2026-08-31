@@ -9,7 +9,7 @@
 # Ownership Map — Tauka Shared Database
 > **Canonical location.** This is the root-level unified ownership file for all three projects.
 > Each project-level `shared-db/OWNERS.md` must mirror this file.
-> Last updated by: root on 2026-06-01
+> Last updated by: tauka-python on 2026-08-28 (§85/§86 — the cohort_matching domain, and tauka-python registered as a shared writer of the cohort tables)
 
 ---
 
@@ -32,12 +32,16 @@
 
 | Table | Owner Project | Domain | Access Granted To |
 |---|---|---|---|
-| user_profiles | tauka-flutter | identity_access | tauka-python reads; trigger writes subscription_tier via trg_sync_student_tier; in-app READ is scoped by RLS to own row / admin / assigned students / conversation peers (§56) |
+| user_profiles | tauka-flutter | identity_access | **tauka-python CREATES the row at signup (§/auth/provision, 2026-08-28) and hardcodes `user_type = 'student'` — the role is never a request parameter, because tutors are admin-created.** tauka-python reads; trigger writes subscription_tier via trg_sync_student_tier; in-app READ is scoped by RLS to own row / admin / assigned students / conversation peers (§56) |
 | admin_users | tauka-flutter | identity_access | tauka-python reads for admin check |
 | devices | tauka-flutter | identity_access | tauka-flutter only |
 | student | tauka-flutter (schema); tauka-python (tier/stripe cols) | student_tutor | SHARED WRITE — see Shared-Write Tables below |
 | tutor | tauka-flutter | student_tutor | tauka-python reads for rate calculation |
 | student_course | tauka-flutter | student_tutor | tauka-flutter only |
+| student_tutor_link | tauka-flutter (schema) | student_tutor | **NEW §73, 2026-08-27.** SHARED WRITE — **tauka-python writes every row** (matching, referral, handoff) via service role; there is no client INSERT/UPDATE/DELETE policy at all, deliberately. SELECT: the student (their own roster), the named tutor (only links naming them), and admins (D-05: admins must see which tutor is home and which are guests). Replaces `app.student.tutor_id`, which was **dropped** in the same migration |
+| session_entitlement | tauka-flutter (schema) | student_tutor | **NEW §74, 2026-08-27.** tauka-python writes ONLY. **APPEND-ONLY, enforced by a trigger that fires for the service role too** — a balance is a fold over this table, never a column. SELECT: the student's own rows, and admins |
+| one_to_one_session | tauka-flutter (schema) | student_tutor | **NEW §74, 2026-08-27.** tauka-python writes ONLY, via `app.book_one_to_one()` / `app.cancel_one_to_one()`, which create the booking and its ledger consumption in one transaction. A client write path here would be a free lesson. SELECT: the student, the tutor, admins |
+| enrollment_commitment | tauka-flutter (schema) | student_tutor | **NEW §76, 2026-08-27.** **tauka-python is the SOLE WRITER** — it is billing, and every write is the Stripe webhook path via service role. SELECT: the student (their own contract), the **locked tutor** (the guarantee constrains their roster too), and admins. **NOT a tier** — it NAMES the tier it entitles; `app.student.tier` stays the entitlement axis (§4.4) |
 | activity_file | tauka-flutter | activity | **SHARED-WRITE (narrow).** tauka-flutter owns the DDL and writes its own rows. Catalogue of the JSONL chunks in the `activity` bucket. SELECT via `app.can_read_activity()` (self, or an assigned tutor when the student is on tutor/intensive tier); client writes are own-rows-only. **tauka-python may DELETE rows whose `covers_to` is past the 90-day retention window, via service role, and nothing else** — no INSERT, no UPDATE, no DDL. Added 2026-08-23, phase 12; see CONFLICT-029 |
 | activity_summary | tauka-flutter | activity | tauka-flutter only. One denormalised row per student, **written by the client**, so a tutor dashboard is an indexed query rather than a bucket download. Same SELECT rule |
 | *(Storage)* `activity` bucket | tauka-flutter | activity | `activity/<userId>/<deviceId>/<chunk>.jsonl`. Storage policies call the **same** `app.can_read_activity()` — a table's RLS does not protect a file. **tauka-python deletes expired and orphaned objects** through the Storage API on the nightly job (a SQL delete on `storage.objects` orphans the blob rather than removing it) |
@@ -64,8 +68,9 @@
 | progress | tauka-flutter | course_content | tauka-flutter only (legacy) |
 | dictionary | tauka-flutter | course_content | tauka-flutter (enrolled students + tutors read) |
 | anki_deck | tauka-flutter | course_content | tauka-flutter only |
-| anki_deck_assignment | tauka-flutter | course_content | tauka-flutter only |
+| anki_deck_assignment | tauka-flutter | course_content | tauka-flutter only. **§81.4, 2026-08-28:** tutors INSERT under `assigned_by = auth.uid() AND assigned_to_user_id IS NOT NULL AND app.teaches_student(assigned_to_user_id) AND assigned_to_class_id IS NULL` — the canonical CONFLICT-033 predicate, matching `exercise_assignment`. The prior policy constrained only the assigner, so any authenticated user could assign a deck to anyone (CONFLICT-042, closed). Class assignment is closed to tutors until there is a class-level predicate; admins are unaffected |
 | course_correction | tauka-flutter | course_content | tauka-flutter only |
+| exercise_assignment | tauka-flutter | course_content | **NEW §79, 2026-08-28.** A tutor assigns an EXISTING exercise set from a unit the student has covered (plan §13.3). Tutors INSERT under `tutor_id = auth.uid() AND app.teaches_student(student_id)` — the canonical CONFLICT-033 predicate. Students UPDATE their own row's `status`, which is a **checkbox, not a measurement**: nothing gates, pays or scores on it, and `result_id` (→ `app.exercise_result`) is the honest record. Shape mirrors `anki_deck_assignment`; its INSERT policy deliberately does not (see below) |
 | content_versions | tauka-flutter | course_content | tauka-flutter only |
 | program | tauka-flutter | course_content | tauka-flutter only |
 | contemporary | tauka-flutter | course_content | tauka-flutter only |
@@ -88,15 +93,19 @@
 | ai_usage | tauka-flutter (DDL) | ai | **SHARED-WRITE. tauka-python is the SOLE writer** — one INSERT per AI call via service role, from what the provider reported. tauka-flutter owns the DDL and never writes it. The `app.student.tier` pattern. Clients get SELECT on their own rows and **no INSERT policy at all** — a self-reported spend ledger reports whatever the client likes. No UPDATE, no DELETE, for anyone. Added 2026-08-23, phase 9; see CONFLICT-030 |
 | ai_practice_session | tauka-flutter | ai | tauka-flutter only |
 | ai_practice_turn | tauka-flutter | ai | tauka-flutter only |
-| exercise_result | tauka-flutter | exercises_progress | tauka-flutter only |
+| exercise_result | tauka-flutter | exercises_progress | tauka-flutter only. **Tutor read realigned §73** — `app.teaches_student()` (the course join), not `student.tutor_id` (CONFLICT-033 RESOLVED) |
 | handwriting_session | tauka-flutter | exercises_progress | tauka-flutter only |
 | flashcard_reviews | tauka-flutter | exercises_progress | tauka-flutter only |
-| voice_recordings | tauka-flutter | exercises_progress | tauka-flutter only |
-| progress_snapshots | tauka-flutter | exercises_progress | tauka-flutter only |
-| cohorts | tauka-flutter | cohort | tauka-flutter only |
-| cohort_memberships | tauka-flutter | cohort | tauka-flutter only |
+| voice_recordings | tauka-flutter | exercises_progress | tauka-flutter writes own rows. **Tutor read NARROWED §79, 2026-08-28** — was `user_id = auth.uid() OR app.is_tutor() OR app.is_admin()`, i.e. **every tutor could read every student's voice recordings**, because `app.is_tutor()` takes no subject. Now `app.can_read_activity(user_id) OR app.is_admin()`, matching `speech_submission` exactly so both voice tables carry one rule. CONFLICT-041. **`phoneme_score` stays NULL for ever** — it is the column shape FC-030 died on |
+| speech_submission | tauka-flutter | exercises_progress | tauka-flutter writes own rows; tutors read + mark reviewed via `app.can_read_activity()` |
+| progress_snapshots | tauka-flutter | exercises_progress | tauka-flutter only. **Tutor read realigned §73** — same as `exercise_result`. This table was the SECOND policy keying on `student.tutor_id`; CONFLICT-033 recorded only one |
+| cohorts | tauka-flutter | cohort | **SHARED WRITE since 2026-08-28 (§86, CONFLICT-048)** — see Shared-Write Tables below. tauka-python INSERTs at formation and UPDATEs `status`, `band_lesson_low/high`, `intake_cycle` |
+| cohort_memberships | tauka-flutter | cohort | **SHARED WRITE since 2026-08-28 (§86, CONFLICT-048)** — see Shared-Write Tables below. tauka-python INSERTs on offer acceptance and UPDATEs `status`/`left_at`/`removal_reason` |
 | cohort_payments | tauka-flutter | cohort | tauka-flutter only |
 | cohort_assignments | tauka-flutter | cohort | tauka-flutter only |
+| cohort_session | tauka-flutter | cohort | tauka-flutter only. Written by the cohort's tutor or an admin, via `app.generate_cohort_sessions()`. Added 2026-08-24 (§65/§66). **§73: gained `lead_tutor_id` / `lead_role`** — the home/guest rota, stamped at generation time. `NULL` lead means the rota could not resolve a tutor, never that there is no session |
+| cohort_session_attendance | tauka-flutter | cohort | tauka-flutter only. **Tutor-written only** — a student may read their own row but never write it, via `app.mark_attendance()`. Added 2026-08-24 |
+| `session-recordings` (Storage bucket) | tauka-flutter (schema) | cohort | **Private.** Read via signed URL, gated by `app.can_read_cohort()`. **Written by tauka-python only** (vendor webhook, service role) - no client write policy exists. Added 2026-08-24 (S67) |
 | broadcast | tauka-flutter | broadcast | tauka-flutter only. READ of `target_type='course'` rows is scoped by RLS to students enrolled in that course (§55) |
 | broadcast_reaction | tauka-flutter | broadcast | tauka-flutter only |
 | broadcast_comment | tauka-flutter | broadcast | tauka-flutter only |
@@ -115,17 +124,39 @@
 | gift_subscriptions | tauka-python | test_referral | tauka-flutter reads own rows; tauka-react-web reads own rows (student_id = auth.uid()) |
 | testimonial_requests | tauka-python | test_referral | tauka-python only (admin writes); tauka-react-web reads published rows (status='published' public RLS) |
 | email_verifications | tauka-python | test_referral | tauka-python only (OTP service); no direct Flutter or web client access |
-| tutor_sessions | tauka-python | tutor_management | tauka-flutter reads (tutors see own sessions) |
+
 | tutor_payout_settings | tauka-python | tutor_management | tauka-flutter reads masked display (details_last4 only) |
 | tutor_payroll | tauka-python | tutor_management | tauka-flutter reads (tutors see own rows) |
 | payroll_line_item | tauka-python | tutor_management | tauka-flutter reads (via tutor_payroll join) |
-| tutor_rates | tauka-python | tutor_management | tauka-flutter reads own rows |
+| rate_card | tauka-python | tutor_management | **NEW §75, 2026-08-27.** The pay rate per **country** (D-17, plan §15.3), not per tutor. tauka-python + admins write. SELECT: a tutor may read the card for their own country — pay that cannot be explained to the person receiving it is what §1.4 exists to avoid |
+| tutor_rate_version | tauka-python | tutor_management | **NEW §75.** `base × tenure × quality`, versioned, with `inputs jsonb` snapshotting what it was derived from. Replaces `tutor_rates` (D-07). tauka-flutter reads own rows |
+| float_ledger | tauka-python | tutor_management | **NEW §75. APPEND-ONLY** (trigger-enforced, fires for the service role too) and **admin-only read** — this is the platform's own money position. Written solely by `app.append_float_ledger()`, which serialises per currency. A balance is a fold, partitioned by currency; `balance_after_minor` is a cross-check |
+| payout_run | tauka-python | tutor_management | **NEW §75.** One run per (period, currency). **Admin-only read** — `total_minor` is every tutor's pay added together. Phase 3a leaves runs approved and disburses nothing |
+| payout_line | tauka-python | tutor_management | **NEW §75.** tauka-flutter/react-web read **own rows only**. Carries the FX leg snapshotted at settlement; a cross-currency settlement without `fx_rate` + `fx_source` is refused by CHECK |
+
+> **REMOVED §77 (O-22):** `tutor_sessions` was **dropped** — 0 rows, no writer, and read by nothing once the payout run and `get_earnings` were both pointed at `cohort_session.lead_tutor_id` + `one_to_one_session.tutor_id`, the two tables that record who actually *delivered* a session.
+>
+> **REMOVED §75 (CONFLICT-040):** `tutor_payroll`, `payroll_line_item` and
+> `tutor_rates` were **dropped**. 0 rows, `numeric` money, no currency on the
+> line items, and their only writer — the `payroll` Edge Function — was never
+> deployed and named four tables and columns that do not exist. Do not
+> re-create them.
+| tutor_standing | tauka-python | tutor_management | **NEW §79, 2026-08-28.** Versioned tutor standing (spec §1.6), recomputed monthly. **tauka-python service role only** — a tutor who could write this table could promote themselves onto first-pick eligibility. SELECT: own rows and admins; a gate you cannot see is indistinguishable from the platform disliking you. `inputs jsonb` snapshots the numbers behind each verdict, which is also the audit trail proving no telemetry input was used |
+| tutor_feedback | tauka-python | tutor_management | **NEW §79, 2026-08-28.** Structured tutor feedback → internal review queue (spec §1.6). **SHARED WRITE, and unlike the rest of this domain the tutor writes it from Flutter directly** — `tutor_feedback_insert_own` requires `tutor_id = auth.uid() AND app.is_tutor() AND status = 'new'`, mirroring `course_correction`. Triage (`status`, `admin_note`) is **admin only**; a submitter who could set their own status to `actioned` has a feature-request system that lies. The tutor reads the admin's note back — that is the whole difference from a support email |
+| tutor_referral_link | tauka-python | tutor_management | **NEW §72, 2026-08-27.** tauka-python writes via service role ONLY. SELECT: the owning tutor (`tutor_id = auth.uid()`, non-deleted) and admins. No client write policy exists, deliberately |
+| referral_signup | tauka-python | tutor_management | **NEW §72, 2026-08-27.** tauka-python writes via service role ONLY. SELECT: the referring tutor and admins — **students never read it**. `student_id` is UNIQUE: one attribution per student, ever, which is the integrity of the revenue share |
 | feature_flag | tauka-python | platform_config | tauka-flutter reads all flags; admins write |
 | tier_gating_rules | tauka-python | platform_config | tauka-flutter reads all rules |
 | config | tauka-python | platform_config | tauka-flutter reads all config |
 | stripe_events | tauka-python | platform_config | tauka-python only (service role) |
+| trust_warning_stat | tauka-python | platform_config | **NEW §78, 2026-08-27.** tauka-python writes ONLY, via `app.record_trust_warning()`. **Admin read only.** Anonymous by construction — no user id, conversation id, message id or matched text, deliberately (plan §17.3). Adding one would turn a counter into surveillance and re-open L-008 |
 | achievements | tauka-python | platform_config | tauka-flutter reads; tauka-python seeds |
 | tutor_availability | tauka-flutter (schema) + tauka-react-web (writes own slots) | tutor_management | SHARED WRITE — see Shared-Write Tables below |
+| student_time_preference | tauka-python | cohort_matching | **NEW §85, 2026-08-28.** The student writes their own rows (`stp_write_own`, `student_id = auth.uid()`), admins all. **No tutor read policy, deliberately** — a tutor needs the cohort's slot, not the twelve windows a student offered before one was chosen |
+| tutor_teaching_profile | tauka-python | cohort_matching | **NEW §85, 2026-08-28.** The tutor writes their own row from `/tutor/teaching` on tauka-react-web. **`min_level`/`max_level` are ADMIN-ONLY**, enforced by the trigger `app.ttp_guard_certification()` because RLS cannot express "these columns only" — self-certification is the same hole as a client choosing its own `user_type`. **No blanket authenticated SELECT**: it would be a browsable directory of who teaches what |
+| intake_cycle | tauka-python | cohort_matching | **NEW §86, 2026-08-28.** tauka-python writes ONLY (service role). SELECT: **admins only** — the row carries the whole platform's supply picture and every weight it ran under |
+| match_offer | tauka-python | cohort_matching | **NEW §86, 2026-08-28.** tauka-python writes ONLY. **There is deliberately NO client write policy**: accepting checks live capacity, invalidates the student's other holds, creates the teaching link through `matching_service`, and re-offers the released seats — four things a status update would skip, and the first symptom would be a five-member cohort. SELECT: the student's own offers, and admins |
+| deferred_student | tauka-python | cohort_matching | **NEW §86, 2026-08-28.** tauka-python writes ONLY. SELECT: the student's own rows — plan §4b Stage 1 makes the reason part of what they are owed, "not 'no match found'" — and admins |
 | **web.interest** | **tauka-react-web** | marketing_capture | tauka-react-web only. NOT in the `app` schema — see the note below |
 
 ---
@@ -158,12 +189,23 @@ exists — so it is deliberately outside the authenticated `app` surface.
 
 | Table | Schema Owner | Projects That Write | Rules |
 |---|---|---|---|
-| app.student | tauka-flutter | tauka-flutter (creates row on sign-up, updates non-Stripe columns); tauka-python (writes tier, stripe_customer_id, stripe_subscription_id, subscription_status, current_period_end, active_gift_id via service role) | tauka-flutter MUST NOT write tier/stripe columns. tauka-python MUST NOT create/delete student rows. The trigger trg_sync_student_tier keeps user_profiles.subscription_tier in sync — do not duplicate this write. |
+| app.student | tauka-flutter | **tauka-python CREATES the row** (`POST /auth/provision`, service role) and writes tier, stripe_customer_id, stripe_subscription_id, subscription_status, current_period_end, active_gift_id; tauka-flutter updates non-Stripe columns | **CHANGED 2026-08-28 — signup moved to tauka-react-web.** Row creation is now tauka-python's, via `POST /auth/provision` (service role). tauka-flutter no longer creates accounts: its `_ensureUserProfile` / `upsertStudent` remain only as an idempotent repair for an already-authenticated user. tauka-python still MUST NOT **delete** student rows. tauka-flutter MUST NOT write tier/stripe columns. **Provisioning never writes `tier`** — the column default is the only thing that sets an initial tier (and that default was itself broken until §81.1; see CONFLICT-045). The trigger trg_sync_student_tier keeps user_profiles.subscription_tier in sync — do not duplicate this write. |
 | app.user_profiles | tauka-flutter | tauka-flutter (own-row updates); trigger trg_sync_student_tier (subscription_tier, tier_updated_at written automatically when student.tier changes) | NEVER update subscription_tier or user_type directly from any project code. RLS WITH CHECK blocks client self-promotion of these columns. |
 | app.push_tokens | tauka-flutter | tauka-flutter (INSERT/DELETE own tokens); tauka-python (reads only — never writes) | Append-only from Flutter; tauka-python never writes. |
 | app.tutor_availability | tauka-flutter (schema owner) | tauka-flutter (tutors manage own slots via mobile app); tauka-react-web (tutors manage own slots via web portal at /tutor/schedule) | RLS policy tutors_manage_own_availability enforces tutor_id = auth.uid(). Both projects may upsert own rows. Neither may write another tutor's rows. |
+| app.cohorts | tauka-flutter | tauka-flutter (admins, via the Flutter admin dashboard); **tauka-python (the cohort matcher, service role)** | **NEW 2026-08-28 (§86, CONFLICT-048).** The `app.student.tier` pattern: Flutter owns the DDL, Python owns one write path. tauka-python INSERTs a cohort at formation and UPDATEs `status`, `band_lesson_low/high`, `intake_cycle`. It **MUST NEVER** write `health_score`/`health_status`/`health_computed_at` (the `cohort-health` function's, §84), `tutor_id` after formation (a tutor change is a §1.7 handoff, not a rematch), or `recording_consent` (the members' answer). **No policy change was made:** the write policy is `app.is_admin()`, an authenticated-user predicate, and the service role bypasses RLS — adding a policy for tauka-python would widen the *authenticated* surface to grant something the service role already has. |
+| app.cohort_memberships | tauka-flutter | tauka-flutter (admins); **tauka-python (offer acceptance, service role)** | **NEW 2026-08-28 (§86, CONFLICT-048).** A cohort is created with **zero members**; membership is what *accepting an offer* creates. tauka-python INSERTs on acceptance and UPDATEs `status`/`left_at`/`removal_reason` when a cohort dissolves at cycle close. Writing memberships at formation would place people who have not been asked. |
 
 ---
+
+> **§80 (2026-08-28) — `app.one_to_one_session` gained three columns.**
+> `rescheduled_count`, `last_rescheduled_at` and `refund_forfeited`, all written
+> **only** by `app.reschedule_one_to_one()`. No client writes them and no client
+> may: `refund_forfeited` decides whether a later cancellation returns a paid
+> session to the student's balance, so a client that could set it could refund
+> itself. `app.cancel_one_to_one()` was amended in the same migration to read it
+> — without that the column would be written and read by nothing, and the
+> loophole it closes would stay open while looking shut.
 
 ## Cross-Project Dependencies
 
@@ -185,20 +227,32 @@ exists — so it is deliberately outside the authenticated `app` surface.
 | app.tutor_availability (all columns) | tauka-react-web | /tutor/schedule reads and upserts availability slots. RLS policy tutors_manage_own_availability must remain. |
 | app.push_tokens (user_id, token, platform) | tauka-python | Python reads for FCM dispatch. Column names must remain stable. |
 | app.config (key, value) | tauka-flutter | AppVersionService reads min_version key on start. |
-| app.feature_flag (name, enabled) | tauka-flutter | TierGatingService reads on init. |
+| app.feature_flag (key, status) | tauka-flutter | **Corrected 2026-08-25 (CONFLICT-037).** The columns are `key`/`status`, not `name`/`enabled`, and `TierGatingService` does **not** read this table — it never has. `FeatureFlags` (`services/speech/feature_flags.dart`) is the first and only reader; it fails open, so only an explicit `status = 'coming'` disables anything. |
 
 ---
 
 ## RLS Read Scope — tables where "who can read" is not "everyone authenticated"
 
-Ownership answers *who may write*. These two tables additionally restrict
+Ownership answers *who may write*. The tables below additionally restrict
 *who may read which rows*, which is easy to miss because the owner is
 unchanged and no column moved.
+
+**A policy on this list can be wrong in the widening direction and look fine.**
+`voice_recordings_select_own_or_tutor_admin` read `app.is_tutor()` — a predicate
+that takes no subject and therefore answers "is the caller *a* tutor", not "is
+this *their* student". It sat in production, in the heaviest data category the
+platform holds, until Phase 6 read it while scoping a feature (CONFLICT-041).
+When adding a row here, name the predicate **and its argument**: a rule with no
+subject is not a read scope.
 
 | Table | Rows a caller can read | Enforced by | Added |
 |---|---|---|---|
 | `app.broadcast` | All `program` / `level` / `cohort` posts; `course` posts only if enrolled in or teaching that course, or its author, or admin | `broadcast_select_audience` → `app.is_enrolled_in_course()` | §55, 2026-08-14 |
 | `app.user_profiles` | Own row; assigned students if tutor; all if admin; **anyone sharing a conversation with the caller** | `user_profiles_select_conversation_peer` → `app.shares_conversation_with()` | §56, 2026-08-14 |
+| `app.voice_recordings` | Own rows; the caller's students on a paid tier; admins | `voice_recordings_select_own_or_teacher_admin` → `app.can_read_activity()` | §79, 2026-08-28 — **narrowed**, see CONFLICT-041 |
+| `app.tutor_standing` | Own rows; admins | `tutor_standing_select_own` | §79, 2026-08-28 |
+| `app.tutor_feedback` | Own submissions (including the admin's reply); admins | `tutor_feedback_select_own` | §79, 2026-08-28 |
+| `app.exercise_assignment` | Rows naming the caller as student **or** as the assigning tutor | `exercise_assignment_select_student` / `_select_tutor` | §79, 2026-08-28 |
 
 Consequences worth knowing before debugging either table:
 
