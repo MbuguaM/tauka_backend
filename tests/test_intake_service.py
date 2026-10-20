@@ -24,7 +24,7 @@ def test_an_empty_config_is_the_numbers_the_plan_chose():
     cfg = intake_service._rows_to_config([])
     assert (cfg.tz_band_hours, cfg.lesson_band) == (2.0, 5)
     assert (cfg.cohort_min, cfg.cohort_max) == (3, 4)
-    assert cfg.offer_ttl_hours == 48
+    assert cfg.offer_ttl_hours == 24   # E-13 (§102)
     assert cfg.weights["goal"] == 30.0
 
 
@@ -131,6 +131,7 @@ DB_REASONS = {
     "TOO_FEW_PEERS_AT_LEVEL", "TUTORS_AT_CAPACITY", "DECLINED_ALL_OFFERS",
     "NO_TIMEZONE", "TOO_FEW_PREFERENCES", "NO_LEVEL",
     "COHORT_DID_NOT_FILL", "OFFERS_EXPIRED",
+    "GROUP_WAITING", "GROUP_LEVEL_GAP",   # §108b, friend groups
 }
 
 
@@ -172,28 +173,77 @@ def test_silence_and_refusal_are_different_reasons():
     assert "turned down" in offer_service.DEFERRAL_MESSAGES["DECLINED_ALL_OFFERS"]
 
 
-# ── The intake-day guard ─────────────────────────────────────────────────────
+# ── The calendar trigger (§102, plan 3.4) ───────────────────────────────────
+#
+# `match.intake_days` ("1st and 15th") is retired. A formation is matched once,
+# on cutoff_closes + run_days_after_cutoff, before formation day; a missed cron
+# day is caught up; a rehearsal intake is still returned (and run dry).
 
-@pytest.mark.parametrize("raw, day, expected", [
-    ("1,15", 1, True), ("1,15", 15, True), ("1,15", 7, False),
-    ("1, 15 ", 15, True), ("", 1, True), ("nonsense", 15, True),
+class _FakeQ:
+    def __init__(self, tables, name):
+        self.tables, self.name, self.f = tables, name, []
+
+    def select(self, *a, **k): return self
+    def order(self, *a, **k): return self
+    def limit(self, *a, **k): return self
+    def eq(self, c, v): self.f.append(lambda r: r.get(c) == v); return self
+    def in_(self, c, vs): self.f.append(lambda r: r.get(c) in vs); return self
+
+    def execute(self):
+        rows = [r for r in self.tables.get(self.name, []) if all(f(r) for f in self.f)]
+        return type("R", (), {"data": rows})()
+
+
+def _fake_db(monkeypatch, tables):
+    class _S:
+        def table(self, name): return _FakeQ(tables, name)
+    monkeypatch.setattr(intake_service.db, "schema", lambda *a, **k: _S())
+
+
+TIR = {"id": "tir", "ethiopic_month": "tir", "ec_year": 2019, "cutoff_closes": "2027-01-05",
+       "formation_date": "2027-01-09", "mode": "live", "status": "scheduled"}
+HIDAR = {"id": "hidar", "ethiopic_month": "hidar", "ec_year": 2019, "cutoff_closes": "2026-11-05",
+         "formation_date": "2026-11-10", "mode": "rehearsal", "status": "scheduled"}
+
+
+@pytest.mark.parametrize("today, expected", [
+    ("2027-01-05", []),        # deadline day itself: learners can still finish
+    ("2027-01-06", ["tir"]),   # the day after: match
+    ("2027-01-08", ["tir"]),   # cron missed two days: caught up
+    ("2027-01-09", []),        # formation day: too late to match
 ])
-def test_intake_day_parsing(raw, day, expected, monkeypatch):
-    """The cadence guard, same shape as `payout.cadence_day`. A malformed value
-    falls back to the 1st and 15th rather than running every day or never."""
-    class _Result:
-        data = [{"value": raw}] if raw else [{}]
-
-    class _Q:
-        def select(self, *a, **k): return self
-        def eq(self, *a, **k): return self
-        def limit(self, *a, **k): return self
-        def execute(self): return _Result()
-
-    class _Schema:
-        def table(self, *a, **k): return _Q()
-
-    monkeypatch.setattr(intake_service.db, "schema", lambda *a, **k: _Schema())
-
+def test_due_intakes_follows_the_calendar(today, expected, monkeypatch):
     from datetime import date
-    assert intake_service.is_intake_day(date(2026, 9, day)) is expected
+    _fake_db(monkeypatch, {"intake": [TIR], "intake_cycle": [],
+                           "config": [{"key": "match.run_days_after_cutoff", "value": "1"}]})
+    got = intake_service.due_intakes(date.fromisoformat(today))
+    assert [r["id"] for r in got] == expected
+
+
+def test_an_intake_is_matched_once(monkeypatch):
+    from datetime import date
+    _fake_db(monkeypatch, {"intake": [TIR], "intake_cycle": [{"intake_id": "tir"}], "config": []})
+    assert intake_service.due_intakes(date(2027, 1, 7)) == []
+
+
+def test_cancelled_intake_is_never_due(monkeypatch):
+    from datetime import date
+    _fake_db(monkeypatch, {"intake": [{**TIR, "status": "cancelled"}], "intake_cycle": [], "config": []})
+    assert intake_service.due_intakes(date(2027, 1, 6)) == []
+
+
+def test_rehearsal_is_returned_so_it_can_run_dry(monkeypatch):
+    from datetime import date
+    _fake_db(monkeypatch, {"intake": [HIDAR], "intake_cycle": [], "config": []})
+    assert [r["mode"] for r in intake_service.due_intakes(date(2026, 11, 6))] == ["rehearsal"]
+
+
+def test_pool_for_an_intake_is_seat_confirmed_for_it_plus_the_wait_pool(monkeypatch):
+    _fake_db(monkeypatch, {"enrolment_state": [
+        {"student_id": "a", "state": "seat_confirmed", "target_intake_id": "tir"},
+        {"student_id": "b", "state": "seat_confirmed", "target_intake_id": "yekatit"},
+        {"student_id": "c", "state": "wait_pool", "target_intake_id": "hidar"},
+        {"student_id": "d", "state": "paid", "target_intake_id": "tir"},   # Phase 0 not finished
+        {"student_id": "e", "state": "phase0", "target_intake_id": "tir"},
+    ]})
+    assert intake_service._enrolled_for("tir") == {"a", "c"}

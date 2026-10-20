@@ -1,6 +1,6 @@
 import logging
 
-from app.services import booking_service, commitment_service
+from app.services import booking_service, clinic_service, commitment_service, makeup_delivery
 
 logger = logging.getLogger(__name__)
 
@@ -34,26 +34,36 @@ async def run_commitment_lifecycle() -> None:
 
 
 async def report_unmarked_sessions() -> None:
-    """Daily: log past 1-on-1s nobody has marked.
+    """Daily: log past sessions nobody has marked — 1-on-1s, make-ups (§2f item
+    9) and Phase 0 clinics.
 
     **Reports, never decides.** A session becomes `completed` only when its tutor
-    says so (`app.mark_one_to_one_outcome`), because `payout_service` pays for
-    `completed` rows and a sweep would pay for lessons nobody attended.
+    says so, because `payout_service` pays for `completed` rows and a sweep would
+    pay for lessons nobody attended. An unmarked make-up also blocks that
+    learner's next make-up seat.
 
     Unmarked sessions are unpaid sessions, so this list is the thing standing
     between a tutor and their money — which is why it is logged at WARNING rather
     than INFO once anything is on it.
     """
+    lanes = {}
     try:
-        stale = await booking_service.unmarked_sessions(hours=24)
+        lanes["1-on-1"] = await booking_service.unmarked_sessions(hours=24)
     except Exception as exc:  # noqa: BLE001
-        logger.error("unmarked session report failed: %s", exc)
-        return
+        logger.error("unmarked 1-on-1 report failed: %s", exc)
+    try:
+        lanes["make-up"] = makeup_delivery.unmarked(hours=24)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("unmarked make-up report failed: %s", exc)
+    try:
+        lanes["clinic"] = clinic_service.unmarked(hours=24)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("unmarked clinic report failed: %s", exc)
 
-    if not stale:
-        return
-
-    logger.warning(
-        "%d 1-on-1 session(s) are past and unmarked — they cannot be paid until "
-        "the tutor records an outcome. Oldest: %s",
-        len(stale), stale[0].get("scheduled_at"))
+    for lane, stale in lanes.items():
+        if not stale:
+            continue
+        oldest = stale[0].get("scheduled_at") or stale[0].get("starts_at")
+        logger.warning(
+            "%d %s session(s) are past and unmarked — they cannot be paid until "
+            "the tutor records attendance. Oldest: %s", len(stale), lane, oldest)

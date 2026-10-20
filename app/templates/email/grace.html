@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by grace_service (enrolment plan 2.3a / 2.3b, §126) on days 0, 3, 6
+    and 7 of a missed payment. `until` is in the learner's own zone.
+    kind = started | reminder | last_day | lapsed #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}Update your payment by {{ until }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Your payment") }}
+{% if kind == "lapsed" %}
+{{ ui.heading("Your live sessions are paused.") }}
+{{ ui.p("We still couldn't take your payment, so live sessions, make-ups and clinic bookings are paused. Your seat in your pod is held, and the lessons you've unlocked stay yours. Update your payment and everything comes back at once.") }}
+{% elif kind == "last_day" %}
+{{ ui.heading("Tomorrow your live sessions pause.") }}
+{{ ui.p("Your payment still hasn't gone through. Update it before " ~ until ~ " to keep your live sessions. Your seat is held either way.") }}
+{% elif kind == "reminder" %}
+{{ ui.heading("Your payment still needs updating.") }}
+{{ ui.p("Everything carries on until " ~ until ~ ": your sessions, make-ups and lessons. After that, live sessions pause until the payment goes through.") }}
+{% else %}
+{{ ui.heading("Your payment didn't go through.") }}
+{{ ui.p("Nothing changes for 7 days: your sessions, make-ups and lessons carry on until " ~ until ~ ". This month's new lessons unlock when the payment succeeds.") }}
+{% endif %}
+{{ ui.button(web_base_url ~ "/account/subscription", "Update payment") }}
+
+{{ ui.divider() }}
+{{ ui.p("Open the app and download any unlocked lessons you haven't saved yet. If your subscription ends, they stay on your device, but new downloads stop.") }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

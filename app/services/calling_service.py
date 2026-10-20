@@ -93,6 +93,42 @@ async def generate_daily_token(user_id: str, room: str) -> dict:
     return {"token": token, "room_url": room_url, "vendor": "daily"}
 
 
+async def create_daily_room(name: str, expires_at: int, properties: dict | None = None) -> str | None:
+    """Create (or find) a Daily.co room and return its URL, or None.
+
+    For scheduled sessions that need a room before anyone joins — make-ups
+    (enrolment plan §2f item 3). Never raises: a room that couldn't be made is a
+    tutor pasting a link, not a booking that failed. Unlike
+    `generate_daily_token`, a duplicate name is handled — Daily answers 400 when
+    the room already exists, so the existing room is fetched instead.
+    """
+    if not settings.DAILY_API_KEY:
+        return None
+    headers = {
+        "Authorization": f"Bearer {settings.DAILY_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.post(
+                "https://api.daily.co/v1/rooms", headers=headers,
+                # Peer sessions (plan 5.3) pass start_video_off: audio-only by default.
+                json={"name": name, "properties": {"exp": expires_at, **(properties or {})}},
+            )
+            if res.status_code == 200:
+                return res.json().get("url")
+            if res.status_code == 400 and "already" in res.text.lower():
+                got = await client.get(f"https://api.daily.co/v1/rooms/{name}", headers=headers)
+                if got.status_code == 200:
+                    return got.json().get("url")
+            import logging
+            logging.getLogger(__name__).warning("Daily room %s: HTTP %s %s", name, res.status_code, res.text[:200])
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("Daily room %s failed: %s", name, exc)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # LiveKit
 # ---------------------------------------------------------------------------

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by clinic_service.daily (enrolment plan 1.5, §105): one reminder per
+    booking, within the day before the clinic. `when` is already in the
+    learner's own timezone. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ when }} · {{ minutes }} minutes · cameras optional{% endblock %}
+{% block content %}
+
+{% if kind == "drop_in" %}
+{#  §115, plan 3.7: a wait-pool drop-in, 50 minutes, any level in the band. #}
+{{ ui.eyebrow("Drop-in session") }}
+{{ ui.heading("Your drop-in is tomorrow.") }}
+
+{{ ui.p(when ~ " · " ~ minutes ~ " minutes") }}
+{{ ui.p("A drop-in is an open conversation session while your pod forms: learners of different levels, one tutor, and plenty of speaking. It's extra: it doesn't use a session credit.") }}
+{{ ui.p("Join from the Learn tab in the Tauka app a few minutes before it starts. Headphones help; cameras are optional.") }}
+
+{{ ui.divider() }}
+{{ ui.p("Can't make it? Cancel the booking in the app before it starts, so someone else can take the seat.") }}
+{% else %}
+{{ ui.eyebrow("Phase 0 clinic") }}
+{{ ui.heading("Your clinic is tomorrow.") }}
+
+{{ ui.p(when ~ " · " ~ minutes ~ " minutes") }}
+{{ ui.p("A clinic is choral shadowing: your tutor reads the Fidel aloud and everyone repeats with microphones muted, so nobody is put on the spot. Cameras are optional.") }}
+{{ ui.p("Join from the Phase 0 page in the Tauka app a few minutes before it starts. Headphones help.") }}
+
+{{ ui.divider() }}
+{{ ui.p("Can't make it? Cancel the booking on the Phase 0 page before it starts, so someone else can take the seat.") }}
+{% endif %}
+
+{% endblock %}

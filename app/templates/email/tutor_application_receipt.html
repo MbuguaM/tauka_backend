@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent once per submission by tutor_application_service (enrolment plan §2j J2,
+    §120). The withdraw link carries a one-off token; only its hash is stored. #}
+{% set footer_audience = "prospect" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}Thank you for applying to teach with Tauka{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Teaching with Tauka") }}
+{{ ui.heading("Thank you, " ~ name ~ ". We have your application.") }}
+
+{{ ui.p("Someone from our team will look at it, including your demo video if you sent one. We may invite you to a short call before we decide. We'll email you either way.") }}
+{{ ui.p("If you send the form again with this email address, we update this application rather than starting a new one.") }}
+
+{{ ui.divider() }}
+{{ ui.p("Changed your mind? You can withdraw your application. Withdrawn applications are deleted after 12 months.") }}
+<div style="margin-top:6px;">{{ ui.quiet_link(withdraw_url, "Withdraw my application") }}</div>
+
+{% endblock %}

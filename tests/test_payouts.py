@@ -467,3 +467,49 @@ async def test_a_malformed_threshold_config_does_not_raise():
     ):
         state = await ps.check_float_balance()
     assert state["low"] == []
+
+
+# ---------------------------------------------------------------------------
+# Make-ups and clinics: pro-rata by minutes (§2f item 6, developer 2026-10-18)
+# ---------------------------------------------------------------------------
+
+def _short_db(makeups, clinics):
+    fake = MagicMock()
+
+    def table(name):
+        t = MagicMock()
+        rows = {"makeup_session": makeups, "clinic": clinics}.get(name, [])
+        t.select.return_value.gte.return_value.lt.return_value.execute.return_value = MagicMock(data=rows)
+        t.select.return_value.in_.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+        return t
+
+    fake.schema.return_value.table.side_effect = table
+    return fake
+
+
+def test_make_ups_and_clinics_are_counted_only_when_completed():
+    makeups = [{"tutor_id": "t1", "duration_minutes": 20, "status": "completed"},
+               {"tutor_id": "t1", "duration_minutes": 30, "status": "scheduled"}]
+    clinics = [{"tutor_id": "t1", "delivered_minutes": 15, "status": "completed"},
+               {"tutor_id": "t1", "delivered_minutes": None, "status": "scheduled"}]
+    with patch.object(ps, "db", _short_db(makeups, clinics)):
+        out = ps.delivered_sessions(date(2026, 8, 1), date(2026, 8, 31))
+    t = out["t1"]
+    assert (t["makeup"], t["clinic"], t["pro_rata_minutes"], t["minutes"]) == (1, 1, 35, 35)
+    assert t["students"] == {}          # no referral share on these lanes
+
+
+@pytest.mark.parametrize("counts,expect", [
+    ({"cohort": 2, "one_to_one": 1}, 300000),                    # flat: 3 x 100000
+    ({"pro_rata_minutes": 15}, 30000),                           # 15/50 of a session
+    ({"pro_rata_minutes": 30}, 60000),                           # a full clinic
+    ({"cohort": 1, "pro_rata_minutes": 20 + 30}, 200000),        # 1 pod + 50 short minutes
+    ({"pro_rata_minutes": 1}, 2000),
+])
+def test_line_amount_is_flat_plus_pro_rata(counts, expect):
+    assert ps.line_amount(counts, 100000) == expect
+
+
+def test_pro_rata_rounds_down_once_over_the_total():
+    # 3 x 15 min at 333 per session: 333*45//50 = 299, not 3 x (333*15//50) = 297.
+    assert ps.line_amount({"pro_rata_minutes": 45}, 333) == 299

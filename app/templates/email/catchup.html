@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent once by catchup_service (enrolment plan 4.8, §114) to a learner marked
+    absent or excused: the tutor's notes and the practice of the lesson the
+    session covered. `when` is in the learner's own timezone. The notes are the
+    tutor's words to the whole pod, shown as written (escaped). #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ pod_name }} · {{ when }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow(pod_name) }}
+{{ ui.heading("Here's what you missed.") }}
+
+{{ ui.p("Your pod met on " ~ when ~ ". Here is how to catch up before the next session.") }}
+
+{% if notes %}
+{% call ui.panel() %}
+{{ ui.p("Your tutor's notes:") }}
+{{ ui.p(notes) }}
+{% endcall %}
+{% endif %}
+
+{% if lesson %}
+{{ ui.p("Your task: open lesson " ~ lesson ~ (" (" ~ lesson_title ~ ")" if lesson_title else "") ~ " in the Learn tab of the Tauka app and work through its practice. It's what the pod covered, so you'll be ready for next time.") }}
+{% else %}
+{{ ui.p("Your task: carry on with your current lesson in the Learn tab of the Tauka app and do its practice, so you're ready for next time.") }}
+{% endif %}
+
+{% if recording_until %}
+{{ ui.p("The session recording is in the app until " ~ recording_until ~ ".") }}
+{% endif %}
+
+{{ ui.divider() }}
+{{ ui.p("Missed sessions aren't carried forward, but your pod keeps its place for you. Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

@@ -1,22 +1,23 @@
-"""The 1st-and-15th intake run — plan §3 Stage 7, Phase 4.
+"""The intake run — plan §3 Stage 7, Phase 4; driven by the calendar since §102.
 
-`/tasks/daily` fires every day; intake runs twice a month. The guard reads
-`match.intake_days` from `app.config` rather than hardcoding the dates — the
-same shape as `payout.cadence_day` and `standing.cadence_day`, with its own key
-so moving payday does not silently move matching day.
+`/tasks/daily` fires every day. Matching runs when an `app.intake` is due:
+`cutoff_closes + match.run_days_after_cutoff` has come and formation hasn't
+(plan 3.4, E-02). `match.intake_days` ("1st and 15th") was retired in §102. A
+**rehearsal** intake (Hidar 2019, a simulated pod) is run DRY: it writes one
+`intake_cycle` row of proposals and places nobody.
 
 THREE JOBS, ONE ENTRY POINT, AND THE ORDER MATTERS.
 
-  1. **Expire** holds past their 48h deadline, and promote each affected
+  1. **Expire** holds past their 24 h deadline (E-13), and promote each affected
      student's next offer. Runs daily and first, because an expired hold is a
      seat somebody else could be sitting in.
   2. **Close** any live cycle whose holds have all resolved: dissolve cohorts
      that never reached three, defer whoever is left with a reason. Runs before
      the new cycle so the closing cycle's members are back in the pool for it.
-  3. **Run** a new cycle, on an intake day only.
+  3. **Run** a new cycle for each due intake.
 
-Steps 1 and 2 run every day. Only step 3 is behind the cadence guard, because a
-48-hour deadline that is only swept on the 1st and the 15th is not a deadline.
+Steps 1 and 2 run every day. Only step 3 waits for the calendar, because a
+24-hour deadline that is only swept on matching day is not a deadline.
 """
 
 import logging
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 async def run_intake_cycle() -> None:
-    """Sweep, close, and — on an intake day — match."""
+    """Sweep, close, and match each intake that is due."""
     try:
         expired = await offer_service.expire_due()
     except Exception as exc:  # noqa: BLE001
@@ -41,16 +42,29 @@ async def run_intake_cycle() -> None:
         logger.error("cycle close failed: %s", exc)
         closed = {"closed": 0}
 
-    if not intake_service.is_intake_day():
-        logger.info("Intake: not an intake day (expired=%s, closed=%s)",
+    today = datetime.now(timezone.utc).date()
+    due = intake_service.due_intakes(today)
+    if not due:
+        logger.info("Intake: nothing due (expired=%s, closed=%s)",
                     expired.get("expired"), closed.get("closed"))
         return
+    for intake in due:
+        await _run_one(intake, today)
 
-    today = datetime.now(timezone.utc).date()
+
+async def _run_one(intake: dict, today) -> None:
+    name = f"{intake['ethiopic_month'].title()} {intake['ec_year']}"
+    rehearsal = intake.get("mode") == "rehearsal"
     try:
-        result = await intake_service.run_cycle(mode="live", cycle_date=today)
+        result = await intake_service.run_cycle(
+            mode="dry_run" if rehearsal else "live", cycle_date=today,
+            notes=f"{name} ({'rehearsal' if rehearsal else 'formation'})", intake=intake)
     except Exception as exc:  # noqa: BLE001
-        logger.error("intake cycle failed: %s", exc)
+        logger.error("intake cycle failed for %s: %s", name, exc)
+        return
+    if rehearsal:
+        logger.info("Rehearsal %s: dry run %s, pool=%s", name, result.get("cycle_id"),
+                    (result.get("stats") or {}).get("pool_size"))
         return
 
     if not result.get("ok"):
@@ -74,8 +88,8 @@ async def run_intake_cycle() -> None:
     # empty pool is a different thing entirely. Without this they look the same
     # in the log.
     if stats.get("eligible") == 0:
-        logger.warning("Intake cycle had an empty eligible pool — is anyone "
-                       "on a paid tier with a timezone and three preferences?")
+        logger.warning("Intake cycle had an empty eligible pool — has anyone "
+                       "finished Phase 0, paid, and set a timezone and three preferences?")
     elif stats.get("tutor_slots") == 0:
         logger.warning("Intake cycle found no tutor slots — no tutor has a "
                        "teaching profile, availability and free capacity.")

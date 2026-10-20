@@ -38,12 +38,28 @@ from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 
+# Make-ups and clinics are paid rate x minutes / this (a pod session's length).
+# Developer decision 2026-10-18 (enrolment plan §2f item 6).
+PRO_RATA_BASE_MINUTES = 50
+
 _DEFAULTS = {
     "payout.cadence_day": "1",
     "payout.float_low_balance_minor": '{"USD":50000}',
     "payout.vesting_schedule_bp": '{"0":0,"3":250,"6":500,"12":1000}',
     "payout.vesting_min_tenure_days": "90",
     "payout.default_currency": "USD",
+    # Plan 8.4 (§134): what each kind of work is worth against the rate card's
+    # per-session rate, in basis points. Make-ups and clinics stay pro-rata.
+    "payout.type_rates_bp": '{"one_to_one_25":5000,"review_item":1000,"gathering":15000,'
+                            '"qa_observation":5000,"other":10000}',
+    # Plan 8.4: a monthly connectivity stipend per currency, paid to anyone who
+    # delivered work in the period. Empty = none.
+    "payout.connectivity_stipend_minor": "{}",
+    # Plan 8.5 / E-11: 'commission' = a flat share of what a referred learner
+    # paid, for 12 months from signup; 'vesting' = the older tenure share.
+    "payout.referral_rule": "commission",
+    "payout.referral_commission_bp": "1000",
+    "payout.referral_commission_months": "12",
 }
 
 # Tenure is measured in whole months of continuous platform membership. The
@@ -409,7 +425,8 @@ def delivered_sessions(period_start: date, period_end: date) -> dict[str, dict]:
 
     def entry(tutor_id: str) -> dict:
         return out.setdefault(
-            tutor_id, {"cohort": 0, "one_to_one": 0, "minutes": 0, "students": {}})
+            tutor_id, {"cohort": 0, "one_to_one": 0, "makeup": 0, "clinic": 0,
+                       "minutes": 0, "pro_rata_minutes": 0, "students": {}})
 
     # ── the cohort lane ──────────────────────────────────────────────────────
     cohort_rows: list[dict] = []
@@ -446,11 +463,72 @@ def delivered_sessions(period_start: date, period_end: date) -> dict[str, dict]:
                 continue
             e = entry(r["tutor_id"])
             e["one_to_one"] += 1
+            # Plan 8.4: a 25-minute 1:1 is priced as its own type.
+            if int(r.get("duration_minutes") or 50) == 25:
+                e["one_to_one_25"] = e.get("one_to_one_25", 0) + 1
             e["minutes"] += int(r.get("duration_minutes") or 50)
             if r.get("student_id"):
                 e["students"][r["student_id"]] = e["students"].get(r["student_id"], 0) + 1
     except Exception as exc:  # noqa: BLE001
         logger.warning("one-to-one session read failed: %s", exc)
+
+    # ── the make-up and clinic lanes (§2f item 6, plan 1.5) ──────────────────
+    # Paid PRO-RATA by minutes (developer 2026-10-18): rate x minutes / 50. Only
+    # `completed` — a make-up completes when every seat is marked (§103); a
+    # clinic when every booking is, with delivered_minutes 15 for the 1:1
+    # check-in fallback (§105). Neither feeds `students`: the referral share is
+    # a per-session share and stays on the pod and 1-on-1 lanes.
+    try:
+        result = db.schema("app").table("makeup_session").select(
+            "tutor_id, duration_minutes, status"
+        ).gte("scheduled_at", frm.isoformat()).lt("scheduled_at", to.isoformat()).execute()
+        for r in result.data or []:
+            if r.get("status") != "completed" or not r.get("tutor_id"):
+                continue
+            e = entry(r["tutor_id"])
+            e["makeup"] += 1
+            e["minutes"] += int(r["duration_minutes"])
+            e["pro_rata_minutes"] += int(r["duration_minutes"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("make-up session read failed: %s", exc)
+
+    try:
+        result = db.schema("app").table("clinic").select(
+            "tutor_id, co_tutor_id, delivered_minutes, status"
+        ).gte("starts_at", frm.isoformat()).lt("starts_at", to.isoformat()).execute()
+        for r in result.data or []:
+            if r.get("status") != "completed" or not r.get("delivered_minutes"):
+                continue
+            # Track 10 (§140): a two-tutor clinic pays both tutors.
+            for t in {r["tutor_id"], r.get("co_tutor_id")} - {None}:
+                e = entry(t)
+                e["clinic"] += 1
+                e["minutes"] += int(r["delivered_minutes"])
+                e["pro_rata_minutes"] += int(r["delivered_minutes"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("clinic read failed: %s", exc)
+
+    # ── per-item work (plan 8.4, §134) ───────────────────────────────────────
+    # Fidel readings reviewed (1.4) and work ops recorded (gatherings, QA).
+    try:
+        result = db.schema("app").table("fidel_approval").select(
+            "reviewed_by, reviewed_at, status"
+        ).gte("reviewed_at", frm.isoformat()).lt("reviewed_at", to.isoformat()).execute()
+        for r in result.data or []:
+            if r.get("reviewed_by") and r.get("status") in ("approved", "redo"):
+                e = entry(r["reviewed_by"])
+                e["review_item"] = e.get("review_item", 0) + 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review read failed: %s", exc)
+    try:
+        result = db.schema("app").table("tutor_work_item").select(
+            "tutor_id, kind, quantity, occurred_on"
+        ).gte("occurred_on", period_start.isoformat()).lte("occurred_on", period_end.isoformat()).execute()
+        for r in result.data or []:
+            e = entry(r["tutor_id"])
+            e[r["kind"]] = e.get(r["kind"], 0) + int(r.get("quantity") or 1)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("work item read failed: %s", exc)
 
     return out
 
@@ -584,6 +662,30 @@ async def compute_payout_run(period_start: date | None = None,
         if rate:
             by_currency.setdefault(rate["currency"], []).append(tutor_id)
 
+    cfg = _config()
+    type_bp = {k: int(v) for k, v in _as_json(cfg["payout.type_rates_bp"], {}).items()}
+    stipends = {k: int(v) for k, v in _as_json(cfg["payout.connectivity_stipend_minor"], {}).items()}
+    rule = cfg.get("payout.referral_rule") or "commission"
+    c_bp = _as_int(cfg.get("payout.referral_commission_bp"), 1000)
+    c_months = _as_int(cfg.get("payout.referral_commission_months"), 12)
+
+    # E-11: a referring tutor is owed commission even in a month they taught
+    # nothing, so they get a line too (if they have a rate, for its currency).
+    if rule == "commission":
+        try:
+            referrers = {r["tutor_id"] for r in (db.schema("app").table("referral_signup").select("tutor_id")
+                         .execute()).data or []}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("referrer read failed: %s", exc)
+            referrers = set()
+        extra = [t for t in referrers if t not in sessions]
+        if extra:
+            for t, r in _current_rate_versions(extra).items():
+                rates[t] = r
+                sessions.setdefault(t, {"cohort": 0, "one_to_one": 0, "makeup": 0, "clinic": 0,
+                                        "minutes": 0, "pro_rata_minutes": 0, "students": {}})
+                by_currency.setdefault(r["currency"], []).append(t)
+
     created = []
     for currency, tutor_ids in by_currency.items():
         run_id = _ensure_run(period_start, period_end, currency)
@@ -594,12 +696,24 @@ async def compute_payout_run(period_start: date | None = None,
         for tutor_id in tutor_ids:
             rate = rates[tutor_id]
             counts = sessions[tutor_id]
-            n = counts["cohort"] + counts["one_to_one"]
-            amount = int(rate["computed_rate_minor"]) * n
-            share = _referral_share_minor(tutor_id, sessions, rates, currency)
-            line_total = amount + share
+            n = (counts["cohort"] + counts["one_to_one"]
+                 + counts.get("makeup", 0) + counts.get("clinic", 0))
+            per = int(rate["computed_rate_minor"])
+            amount = line_amount(counts, per, type_bp)
+            worked = n + sum(counts.get(k, 0) for k in ("review_item", "gathering", "qa_observation", "other"))
+            stipend = stipends.get(currency, 0) if worked else 0
+            if rule == "commission":
+                share = _referral_commission_minor(tutor_id, period_start, period_end, currency, c_bp, c_months)
+            else:
+                share = _referral_share_minor(tutor_id, sessions, rates, currency)
+            line_total = amount + stipend + share
+            if line_total <= 0 and not worked:
+                continue
             total += line_total
-            _upsert_line(run_id, tutor_id, currency, line_total, rate["id"], n, share)
+            breakdown = {"sessions_minor": amount, "stipend_minor": stipend, "referral_minor": share,
+                         "referral_rule": rule, "rate_minor": per,
+                         "counts": {k: v for k, v in counts.items() if k != "students" and v}}
+            _upsert_line(run_id, tutor_id, currency, line_total, rate["id"], n, share, breakdown)
 
         try:
             db.schema("app").table("payout_run").update({
@@ -622,6 +736,59 @@ async def compute_payout_run(period_start: date | None = None,
 
     return {"runs": created, "unrateable": unrateable,
             "period": [period_start.isoformat(), period_end.isoformat()]}
+
+
+def line_amount(counts: dict, per_session: int, type_bp: dict | None = None) -> int:
+    """What a tutor's delivered sessions are worth, in minor units.
+
+    Pod and 1-on-1 sessions at the flat per-session rate; make-ups and clinics
+    pro-rata by minutes against a 50-minute session (developer 2026-10-18),
+    rounded down once over the total — integers throughout, never float.
+
+    Plan 8.4: with `type_bp`, a 25-minute 1:1, a reviewed reading, a gathering
+    and other work items are priced in basis points of the per-session rate.
+    """
+    flat = per_session * (counts.get("cohort", 0) + counts.get("one_to_one", 0))
+    amount = flat + (per_session * counts.get("pro_rata_minutes", 0)) // PRO_RATA_BASE_MINUTES
+    if type_bp:
+        # The 25-minute ones were counted at the full rate above; take the rest off.
+        amount -= (per_session * counts.get("one_to_one_25", 0) * (10000 - type_bp.get("one_to_one_25", 10000))) // 10000
+        for kind in ("review_item", "gathering", "qa_observation", "other"):
+            amount += (per_session * counts.get(kind, 0) * type_bp.get(kind, 0)) // 10000
+    return max(0, amount)
+
+
+def _referral_commission_minor(tutor_id: str, period_start: date, period_end: date, currency: str,
+                               bp: int, months: int) -> int:
+    """E-11 (plan 8.5): a flat share of what each learner this tutor referred
+    PAID in the period, for `months` from their signup. Same currency only."""
+    try:
+        signups = (db.schema("app").table("referral_signup").select("student_id, signed_up_at")
+                   .eq("tutor_id", tutor_id).execute()).data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("referral read failed for %s: %s", tutor_id, exc)
+        return 0
+    if not signups:
+        return 0
+    until = {s["student_id"]: _parse_date(s.get("signed_up_at")) for s in signups}
+    frm = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
+    to = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
+    try:
+        pays = (db.schema("app").table("student_payment").select("student_id, amount_minor, currency, paid_at")
+                .in_("student_id", list(until)).gte("paid_at", frm).lt("paid_at", to).execute()).data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("payment read failed for %s: %s", tutor_id, exc)
+        return 0
+    total = 0
+    for p in pays:
+        signed = until.get(p["student_id"])
+        paid = _parse_date(p.get("paid_at"))
+        if not signed or not paid or p.get("currency") != currency:
+            continue
+        months_in = (paid.year - signed.year) * 12 + (paid.month - signed.month) - (1 if paid.day < signed.day else 0)
+        if 0 <= months_in < months:
+            total += int(p["amount_minor"])
+    return (total * bp) // 10000
 
 
 def _ensure_run(period_start: date, period_end: date, currency: str) -> str | None:
@@ -652,13 +819,15 @@ def _ensure_run(period_start: date, period_end: date, currency: str) -> str | No
 
 
 def _upsert_line(run_id: str, tutor_id: str, currency: str, amount: int,
-                 rate_version_id: str, session_count: int, share: int) -> None:
+                 rate_version_id: str, session_count: int, share: int, breakdown: dict | None = None) -> None:
     payload = {
         "run_id": run_id, "tutor_id": tutor_id, "currency": currency,
         "amount_minor": amount, "rate_version_id": rate_version_id,
         "session_count": session_count, "referral_share_minor": share,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if breakdown is not None:
+        payload["breakdown"] = breakdown   # plan 8.4 (§134)
     try:
         db.schema("app").table("payout_line").insert(payload).execute()
     except Exception as exc:  # noqa: BLE001

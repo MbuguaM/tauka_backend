@@ -85,11 +85,22 @@ Required variables in `.env`:
 | `TOKEN_LIMIT` | No | Monthly token cap (default: `100000`) |
 | `STRIPE_SECRET_KEY` | For billing | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | For billing | Stripe webhook signature secret |
-| `STRIPE_PRICE_LEARNER_MONTHLY` | For billing | Stripe Price ID for Learner $14/mo |
-| `STRIPE_PRICE_TUTOR_MONTHLY` | For billing | Stripe Price ID for Tutor $40/mo |
-| `STRIPE_PRICE_INTENSIVE_MONTHLY` | For billing | Stripe Price ID for Intensive $119/mo |
+| `STRIPE_PRICE_LEARNER_MONTHLY` | For billing | Stripe Price ID for Learner **$32/mo** (must match `pricing.jsx`, authoritative — the old $14 price object must not be reused) |
+| `STRIPE_PRICE_TUTOR_MONTHLY` | For billing | Stripe Price ID for Tutor **$75/mo** (was $40) |
+| `STRIPE_PRICE_INTENSIVE_MONTHLY` | For billing | Stripe Price ID for Intensive **$145/mo** (was $119) |
 | `STRIPE_PRICE_GIFT_1MO` | For gifts | Stripe Price ID for 1-month gift ($40) |
 | `STRIPE_PRICE_GIFT_3MO` | For gifts | Stripe Price ID for 3-month gift ($120) |
+| `STRIPE_PRICE_ADDON_1V1_50` / `_1V1_25` / `_BUNDLE4_50` / `_BUNDLE4_25` | For add-ons | One-time Stripe prices for the pricing page's 1:1 add-ons (plan 2.6, §129). Empty = that product refuses checkout. Also needs the `addons_1v1` flag |
+| `STRIPE_COUPON_GUARANTEE` | No | A 100 %-off coupon for the milestone guarantee's free months (§138). Empty = ops apply it by hand from `/admin/assessments` |
+| `MPESA_ENV` | No | `sandbox` (default) or `production` (Daraja host) |
+| `MPESA_CONSUMER_KEY` / `MPESA_CONSUMER_SECRET` / `MPESA_SHORTCODE` / `MPESA_PASSKEY` | For M-Pesa | Daraja credentials (§130). Any empty = M-Pesa refuses with `not_configured`. Also needs the `mpesa_payments` flag |
+| `MPESA_CALLBACK_TOKEN` | For M-Pesa | Secret path segment of `POST /mpesa/callback/{token}` (the callback URL is built from `API_BASE_URL`) |
+| `MPESA_KES_LEARNER` / `_TUTOR` / `_INTENSIVE` | For M-Pesa | Monthly price per tier in **whole Kenyan shillings** (the KES Stripe prices must match) |
+| `PUSH_ENABLED` | No | Default `false`. Turn on only once Firebase is configured and the `send-push` Edge Function is deployed (FC-008, O-20) |
+| `WHATSAPP_PROVIDER` | No | `console` (default: logs, sends nothing) or `meta` (WhatsApp Cloud API). Also needs the `whatsapp_reminders` flag (L-011) |
+| `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` | For `meta` | Cloud API credentials |
+| `WHATSAPP_VERIFY_TOKEN` / `WHATSAPP_APP_SECRET` | For `meta` | Webhook verification and `X-Hub-Signature-256` check on `POST /whatsapp/webhook` |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_OPS_CHAT_ID` | No | One bot posting cover requests and no-shows to one ops group (plan 6.4). Either empty = off |
 | `EMAIL_PROVIDER` | No | `"console"`, `"smtp"` or `"resend"` (default: `"resend"`). NOT `"sendgrid"` — see below |
 | `EMAIL_API_KEY` | For `resend` | Resend API key |
 | `EMAIL_FROM_ADDRESS` | No | Sender address (default: `Tauka <support@tauka.io>`). For `smtp` it must be `SMTP_USER` or a verified alias |
@@ -102,6 +113,17 @@ Required variables in `.env`:
 | `CORS_ORIGINS` | No | Comma-separated browser origins allowed to call this API |
 | `WEB_BASE_URL` | No | Marketing site URL (default: `https://tauka.io`). Injected into every email template |
 | `API_BASE_URL` | No | This service's public origin (default: `https://api.tauka.io`). Email unsubscribe/opt-out links resolve to FastAPI routes here, not to the site |
+| `TAUKA_ENV_FILE` | No | **A process env var, not a `.env` key.** Which file settings load (default `.env`). `.env.demo` points the service at the local Supabase stack — see `DEMO.md` at the monorepo root |
+
+### JWT verification (`app/dependencies.py`, 2026-10-19)
+
+`get_current_user` accepts **HS256** tokens against `SUPABASE_JWT_SECRET` (production's
+legacy scheme today) **and ES256/RS256** tokens against the project's JWKS at
+`SUPABASE_URL/auth/v1/.well-known/jwks.json`, which is what the local stack issues, and what
+production will issue once Supabase moves the project to signing keys. The algorithm in the
+header only picks the path. HS256 is checked against the secret alone; an asymmetric token is
+checked only against the published key for its `kid`, whose own algorithm must match. An
+unreachable JWKS returns 503, never a pass.
 
 There is **no `APP_BASE_URL`** — removed 2026-08-08. Every destination this service
 emits is a browser URL: Stripe `success_url` / `cancel_url` / `return_url`, and the
@@ -162,6 +184,44 @@ tauka-react-web call to this API fails**, and the placement test degrades to an
 unscorable local question bank labelled "Preview mode". See
 `shared-features/CONFLICT_LOG.md` FC-013.
 | `ENCRYPTION_KEY` | For payouts | Fernet key for encrypting payout settings at rest |
+
+### Server-side feature flags and the hourly job (2026-10-19)
+
+Features from the enrolment plan's later tracks check `app.feature_flag` through
+`app/core/flags.py` `is_ready(key)`, which **fails closed**: no row, a read error, or any
+status but `ready` means off. They are seeded `coming` (§131). Flip a row to `ready` to turn
+a feature on — no deploy — and flip the matching key in tauka-react-web's `featureStatus.js`.
+
+`GET /tasks/hourly` (same `CRON_SECRET` as `/tasks/daily`) makes the Daily rooms for pod
+sessions in the next 24 hours (`cohort_room_service`, 2026-10-20: nothing did before, so pod
+Join could never light up; no URL → no `video_session` row), runs the exchange hourly job
+(lapsed requests passed on, rooms 90 min ahead, unrated sessions settled), then sends the 24 h /
+1 h session reminders (exchanges included) and seat-offer alerts. It needs an external hourly
+scheduler; Vercel's cron here runs daily.
+
+### Features addendum (2026-10-20, §142 / §143)
+
+- `exchange_service` + `/exchange` (exchange partners) and `summary_service` + `/summaries`
+  (lesson summaries), behind `exchange_partners`, `exchange_practise_now`,
+  `exchange_message_flags`, `lesson_summaries`, `summary_questions` — all `coming`. Flow:
+  `shared-features/flows/exchange.md`; domain: `tauka/shared-db/domains/exchange.md`.
+- **The partner role is written here** (`join_partner` creates `user_profiles` with
+  `user_type='partner'`), the same precedent as `/auth/provision`. The learner language columns
+  on `user_profiles` are **not**: the app writes its own row; `/summaries/prefs` only reads.
+- **X-16:** summaries and AI task-card drafts never contain model-written Fidel. The model gets
+  the lesson's words as a numbered list and writes `{{n}}`; `app/core/fidel_translit.py` gives
+  the transliteration. A reply with Ethiopic is retried, then refused.
+- WhatsApp template `exchange_request` ({1} = local time) must be registered with Meta before
+  `WHATSAPP_PROVIDER=meta` sends exchange requests; reminders reuse `session_reminder_*`.
+
+### Two traps found 2026-10-20
+
+- **`client.schema("app")` used to build a new PostgREST client — and an httpx client that
+  loads the CA bundle — on every call** (≈0.5 s per query on Windows). `supabase_client.py`
+  now caches one per schema (`_cache_schemas`); `app/core/supabase_client.py` uses the same.
+- **Never `.in_(col, ids or ["-"])` on a uuid column**: PostgREST rejects the whole query with
+  22P02. FakeDB accepts it, so the unit tests stay green. Return early on an empty list, or use
+  the nil UUID `00000000-0000-0000-0000-000000000000` (matches nothing).
 
 ## Architecture
 

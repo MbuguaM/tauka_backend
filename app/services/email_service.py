@@ -83,7 +83,7 @@ def _failed(reason: str) -> dict:
 
 def _send_resend(recipients: list[str], subject: str, html_body: str,
                  text_body: str | None, reply_to: str | None,
-                 tags: list[str] | None) -> dict:
+                 tags: list[str] | None, attachments: list[dict] | None = None) -> dict:
     """Blocking — always called via asyncio.to_thread."""
     import resend
 
@@ -103,13 +103,19 @@ def _send_resend(recipients: list[str], subject: str, html_body: str,
         params["reply_to"] = reply_to
     if tags:
         params["tags"] = [{"name": t, "value": "true"} for t in tags]
+    if attachments:
+        # Resend takes the bytes as a list of ints (or base64 text).
+        params["attachments"] = [{"filename": a["filename"], "content": list(a["content"]),
+                                  "content_type": a.get("content_type", "application/octet-stream")}
+                                 for a in attachments]
 
     response = resend.Emails.send(params)
     return {"id": (response or {}).get("id", ""), "status": "sent"}
 
 
 def _send_smtp(recipients: list[str], subject: str, html_body: str,
-               text_body: str | None, reply_to: str | None) -> dict:
+               text_body: str | None, reply_to: str | None,
+               attachments: list[dict] | None = None) -> dict:
     """Blocking — always called via asyncio.to_thread."""
     import smtplib
 
@@ -124,6 +130,9 @@ def _send_smtp(recipients: list[str], subject: str, html_body: str,
     # non-HTML clients get an empty body.
     msg.set_content(text_body or "This message requires an HTML-capable client.")
     msg.add_alternative(html_body, subtype="html")
+    for a in attachments or []:
+        maintype, _, subtype = a.get("content_type", "application/octet-stream").partition("/")
+        msg.add_attachment(a["content"], maintype=maintype, subtype=subtype, filename=a["filename"])
 
     # The two TLS modes are not interchangeable. Implicit TLS (port 465) expects
     # a handshake on the first byte, so plain SMTP sends a cleartext EHLO into a
@@ -145,7 +154,8 @@ def _send_smtp(recipients: list[str], subject: str, html_body: str,
     return {"id": f"smtp:{datetime.now(timezone.utc).timestamp()}", "status": "sent"}
 
 
-def _send_console(recipients: list[str], subject: str, html_body: str) -> dict:
+def _send_console(recipients: list[str], subject: str, html_body: str,
+                  attachments: list[dict] | None = None) -> dict:
     """Blocking — always called via asyncio.to_thread."""
     outbox = Path(settings.email_outbox_dir)
     if not outbox.is_absolute():
@@ -163,6 +173,9 @@ def _send_console(recipients: list[str], subject: str, html_body: str) -> dict:
         f"     Rendered: {datetime.now(timezone.utc).isoformat()} -->\n"
     )
     path.write_text(header + html_body, encoding="utf-8")
+    for a in attachments or []:
+        # Beside the message, so a local .ics can be opened by a calendar app.
+        (outbox / f"{stamp}__{a['filename']}").write_bytes(a["content"])
 
     logger.info("[email:console] to=%s subject=%r -> %s", recipients, subject, path)
     return {"id": f"console:{stamp}", "status": "sent"}
@@ -177,8 +190,12 @@ async def send_email(
     text_body: str | None = None,
     reply_to: str | None = None,
     tags: list[str] | None = None,
+    attachments: list[dict] | None = None,
 ) -> dict:
-    """Send transactional email via the configured provider."""
+    """Send transactional email via the configured provider.
+
+    `attachments`: [{"filename", "content": bytes, "content_type"}] — e.g. the
+    placement notice's .ics (plan 3.5)."""
     recipients = [to] if isinstance(to, str) else list(to)
     recipients = [r for r in recipients if r]
     if not recipients:
@@ -194,13 +211,13 @@ async def send_email(
             if not settings.email_api_key:
                 return _failed("EMAIL_API_KEY is not set")
             return await asyncio.to_thread(
-                _send_resend, recipients, subject, html_body, text_body, reply_to, tags
+                _send_resend, recipients, subject, html_body, text_body, reply_to, tags, attachments
             )
         if provider == "smtp":
             return await asyncio.to_thread(
-                _send_smtp, recipients, subject, html_body, text_body, reply_to
+                _send_smtp, recipients, subject, html_body, text_body, reply_to, attachments
             )
-        return await asyncio.to_thread(_send_console, recipients, subject, html_body)
+        return await asyncio.to_thread(_send_console, recipients, subject, html_body, attachments)
     except Exception as exc:
         return _failed(f"provider={provider} {type(exc).__name__}: {exc}")
 
@@ -210,6 +227,8 @@ async def send_template_email(
     template_name: str,
     template_data: dict,
     tags: list[str] | None = None,
+    reply_to: str | None = None,
+    attachments: list[dict] | None = None,
 ) -> dict:
     """Render a Jinja2 email template and send it."""
     try:
@@ -219,4 +238,4 @@ async def send_template_email(
         return _failed(f"template={template_name} {type(exc).__name__}: {exc}")
 
     subject = template_data.get("subject", "Tauka")
-    return await send_email(to, subject, html_body, tags=tags)
+    return await send_email(to, subject, html_body, tags=tags, reply_to=reply_to, attachments=attachments)

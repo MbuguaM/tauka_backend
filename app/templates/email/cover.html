@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by cover_service (enrolment plan §2h, §123). Times are in the
+    recipient's own zone. Learners are never told why their tutor changed.
+    kind = offer | urgent | absent_lead | covered_learner | covered_requester | covered_taker | cancelled
+    (urgent / absent_lead: a reported no-show, plan 8.6) #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ when }}{% endblock %}
+{% block content %}
+
+{% if kind == "offer" %}
+{{ ui.eyebrow("Cover request") }}
+{{ ui.heading("Can you cover a session?") }}
+{{ ui.p(when ~ " · " ~ minutes ~ " minutes · " ~ learners ~ " learner" ~ ("s" if learners != 1 else "") ~ ". You're being asked because you already teach every learner in it and you're free then.") }}
+{{ ui.p("Open the Tauka app: Tutor Dashboard → Cover offers. The first tutor to accept takes it.") }}
+{% elif kind == "urgent" %}
+{{ ui.eyebrow("Urgent cover") }}
+{{ ui.heading("Learners are waiting for a tutor now.") }}
+{{ ui.p("The session at " ~ when ~ " (" ~ minutes ~ " minutes, " ~ learners ~ " learner" ~ ("s" if learners != 1 else "") ~ ") has no tutor. You're asked because you're on standby or free, and you already teach every learner in it.") }}
+{{ ui.p("Open the Tauka app: Tutor Dashboard → Cover offers → Take it, then join. It can be taken until 20 minutes after the start.") }}
+{% elif kind == "absent_lead" %}
+{{ ui.eyebrow("Your session") }}
+{{ ui.heading("Your learners are waiting.") }}
+{{ ui.p("A learner says you haven't joined the session at " ~ when ~ ". If you're on your way, open the Tutor Dashboard and tap \"I'm here\". Otherwise a standby tutor is being found.") }}
+{% elif kind == "covered_learner" %}
+{{ ui.eyebrow("Your session") }}
+{{ ui.heading("Your session is with " ~ tutor ~ ".") }}
+{{ ui.p("Your session on " ~ when ~ " goes ahead as planned, with " ~ tutor ~ " teaching. Join from the app as usual.") }}
+{% elif kind == "covered_requester" %}
+{{ ui.eyebrow("Cover") }}
+{{ ui.heading("Your session is covered.") }}
+{{ ui.p(tutor ~ " is teaching your session on " ~ when ~ ". Nothing else to do.") }}
+{% elif kind == "covered_taker" %}
+{{ ui.eyebrow("Cover") }}
+{{ ui.heading("Thank you — the session is yours.") }}
+{{ ui.p("You're teaching the session on " ~ when ~ ". It's in your sessions in the app, and it's paid to you.") }}
+{% else %}
+{{ ui.eyebrow("Your session") }}
+{{ ui.heading("Your session couldn't go ahead.") }}
+{{ ui.p("We couldn't find a tutor for your session on " ~ when ~ ". That's our failure, so you have a session credit: we'll book it as a make-up with one of your tutors.") }}
+{% endif %}
+
+{{ ui.divider() }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

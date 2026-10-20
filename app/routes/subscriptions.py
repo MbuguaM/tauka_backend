@@ -11,13 +11,31 @@ from app.services.supabase_client import supabase_admin as db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Stripe statuses under which the learner is still being billed or about to be.
+_LIVE_STATUSES = {"active", "trialing", "past_due", "incomplete", "unpaid"}
+
 
 @router.post("/checkout")
 async def create_checkout(
     req: SubscriptionCheckoutRequest,
     user_id: str = Depends(get_current_user),
 ):
-    """Authenticated student creates a Stripe Checkout for self-pay subscription."""
+    """Authenticated student creates a Stripe Checkout for self-pay subscription.
+
+    Refuses a learner who already has a live subscription: Checkout always
+    creates a NEW subscription, so a second purchase would bill them twice.
+    Plan changes for subscribers go through the Stripe billing portal
+    (`POST /account/update-payment-method`). Enrolment plan H4 / 2.1.
+    """
+    existing = (db.schema("app").table("student")
+                .select("stripe_subscription_id, subscription_status")
+                .eq("id", user_id).limit(1).execute().data or [])
+    if existing and existing[0].get("stripe_subscription_id") and             existing[0].get("subscription_status") in _LIVE_STATUSES:
+        raise HTTPException(status_code=409, detail={
+            "reason": "already_subscribed",
+            "message": "You already have a plan. Change it from Manage billing.",
+        })
+
     try:
         user_result = db.auth.admin.get_user_by_id(user_id)
         email = user_result.user.email if user_result and user_result.user else ""

@@ -78,6 +78,10 @@ async def provision_account(
             age_confirmed=req.age_confirmed,
             referral_code=req.referral_code,
             source_platform=req.source_platform,
+            consents=req.consents,
+            learning_goal=req.learning_goal,
+            banner_arm=req.banner_arm,
+            partner_code=req.partner_code,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("provision failed for %s: %s", user_id, exc)

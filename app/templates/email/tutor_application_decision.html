@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by tutor_application_service (enrolment plan §2j J3) when an admin
+    decides. kind = "approved" (invited = a new account, set a password from
+    Supabase's invite email) | "rejected" (code = the reason code; the admin
+    note is internal and never included). #}
+{% set footer_audience = "prospect" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ subject }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Teaching with Tauka") }}
+{% if kind == "approved" %}
+{{ ui.heading("Welcome, " ~ name ~ ". You're approved to teach.") }}
+{% if invited %}
+{{ ui.p("You'll get a separate email to set your password. Use it first; it expires after a day. Then sign in to the Tauka app with this email address.") }}
+{% else %}
+{{ ui.p("Your existing Tauka account is now a tutor account. Sign in to the Tauka app with your usual email and password.") }}
+{% endif %}
+{{ ui.p("Your account starts in onboarding. Next: set your weekly availability in the app, and we'll be in touch about training and the checks before your first pod. You won't be offered any sessions until onboarding is complete.") }}
+{% else %}
+{{ ui.heading("Thank you for applying, " ~ name ~ ".") }}
+{% if code == "capacity" %}
+{{ ui.p("We don't have room for new tutors in your language and region right now. We'd like to hear from you again: please apply for the next intake.") }}
+{% elif code == "language_not_needed" %}
+{{ ui.p("We aren't teaching the language you applied for yet. We'll keep growing, and you're welcome to apply again when we add it.") }}
+{% else %}
+{{ ui.p("After looking at your application carefully, we aren't able to offer you a place to teach with Tauka this time.") }}
+{% endif %}
+{{ ui.p("Your application is deleted after 12 months.") }}
+{% endif %}
+
+{{ ui.divider() }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

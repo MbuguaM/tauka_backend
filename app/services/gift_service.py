@@ -132,6 +132,12 @@ async def activate_gift(stripe_session_id: str) -> dict:
         preserve_original=True,
     )
 
+    # The gift's lessons, one month at a time from when it starts (enrolment
+    # plan §2c). A stacked gift starts where the previous one ends.
+    from app.services.lesson_service import grant_gift_months
+    grant_gift_months(student_id, gift["id"], "tutor_tier",
+                      int(gift["duration_months"]), base_date)
+
     # Notify student
     try:
         user_result = db.auth.admin.get_user_by_id(student_id)
@@ -325,6 +331,9 @@ async def request_refund(gift_id: str, supporter_email: str) -> dict:
     }).eq("id", gift_id).execute()
 
     await restore_original_tier(gift["student_id"])
+
+    from app.services.lesson_service import revoke_gift_months
+    revoke_gift_months(gift["student_id"], gift_id)
 
     # Notify student neutrally
     try:

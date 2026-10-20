@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by test_out_service (enrolment plan 1.6, §99).
+    audience = "learner": staff (a senior tutor, ops or the owner) sent this
+      learner a test-out. Not sent when the learner asked for it themselves.
+    audience = "assessor": a tutor was assigned to assess one.
+    Neither names who asked, and neither carries the learner's details beyond a
+    first name: the app is where the work happens. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{% if audience == "assessor" %}Open the Tauka app to run it and record the result.{% else %}A short live reading with a tutor, instead of the alphabet lessons.{% endif %}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Phase 0 test-out") }}
+{% if audience == "assessor" %}
+{{ ui.heading("A test-out for you to assess.") }}
+{{ ui.p("You have been asked to assess " ~ student_name ~ "'s Phase 0 test-out: a short live reading of the Fidel, on a call you arrange with them.") }}
+{{ ui.p("Open the Tauka app, go to your Tutor Dashboard and find Test-outs. Record Passed, or Not yet with what to practise. Nothing is recorded on the call.") }}
+{% else %}
+{{ ui.heading("You can test out of Phase 0.") }}
+{{ ui.p("Your tutor team thinks you may already read the Fidel. Instead of working through the alphabet lessons, you can show it in a short live reading with a tutor.") }}
+{{ ui.p("Open the Tauka app: your Phase 0 card on the Learn tab shows the request. A tutor will be in touch to arrange a time. If it isn't for you, you can cancel it there and carry on with the lessons.") }}
+{% endif %}
+
+{{ ui.divider() }}
+
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

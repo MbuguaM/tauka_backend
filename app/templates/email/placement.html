@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent once per learner per pod by placement_service (enrolment plan 3.5,
+    §110) when the pod goes live, with the generated sessions attached as
+    tauka-pod.ics. Times are already in the learner's own timezone. The other
+    learners are a count, never names. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{% if first_session %}First session {{ first_session }}{% else %}Your pod is ready{% endif %}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Your pod · " ~ ethiopic_month) }}
+{{ ui.heading("You're in. Meet " ~ pod_name ~ ".") }}
+
+{{ ui.p("You'll learn with " ~ tutor_name ~ " as your tutor, in a pod of " ~ members ~ " learner" ~ ("s" if members != 1 else "") ~ ". Your pod starts in " ~ season ~ ".") }}
+
+{% if first_session %}
+{% call ui.panel() %}
+{{ ui.p("First session: " ~ first_session ~ " · " ~ minutes ~ " minutes") }}
+{{ ui.p("Your slot: " ~ slot) }}
+{% endcall %}
+{{ ui.p("The attached calendar file (tauka-pod.ics) has your next " ~ session_count ~ " session" ~ ("s" if session_count != 1 else "") ~ ". Open it to add them to your calendar. They're always in the Learn tab of the Tauka app too.") }}
+{% else %}
+{{ ui.p("Your session times are being set and will show in the Learn tab of the Tauka app.") }}
+{% endif %}
+
+{{ ui.divider() }}
+{{ ui.eyebrow("Before your first session") }}
+{{ ui.p("Test your device. Open the Tauka app on the phone or computer you'll use, allow the microphone (and the camera if you like), and join a few minutes early. Headphones help.") }}
+{{ ui.p("If the video struggles, turn your camera off. Audio alone is fine, and it's still a full session.") }}
+{{ ui.p("Be kind and patient. Everyone here is learning. If anything in a session worries you, report it from the app (Report a session). Conduct reports go privately to our safeguarding lead, never to the tutor.") }}
+{{ ui.p("Can't make a session? Tell your tutor ahead of time. A session you miss isn't carried forward. A session is carried forward only when the problem was ours, such as a tutor who didn't come or a report we uphold.") }}
+{{ ui.p("Need a break? Pausing or cancelling takes effect at the end of the month you've paid for.") }}
+
+{{ ui.divider() }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

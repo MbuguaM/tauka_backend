@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by placement_service (enrolment plan 3.5, tutor half) right after the
+    learners' placement emails go: once per batch of new learners in a pod.
+    Times are in the tutor's own zone. `names` are first names only. #}
+{% set footer_audience = "tutor" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ names|join(", ") }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Your pod") }}
+{% if new_pod %}
+{{ ui.heading(pod_name ~ " is live.") }}
+{% else %}
+{{ ui.heading((names|length) ~ " new learner" ~ ("s" if names|length != 1 else "") ~ " in " ~ pod_name ~ ".") }}
+{% endif %}
+{{ ui.p("Joining: " ~ names|join(", ") ~ ". The pod now has " ~ members ~ " learner" ~ ("s" if members != 1 else "") ~ ".") }}
+{% if first_session %}
+{{ ui.p("Next session: " ~ first_session ~ " (" ~ minutes ~ " minutes). " ~ (slot or "")) }}
+{% endif %}
+{{ ui.p("Open the Tauka app: Tutor Dashboard. Record the pod's norms before the first session, and check any handoff notes.") }}
+
+{{ ui.divider() }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

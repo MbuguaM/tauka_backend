@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by enrolment_service.send_confirmation — the waitlist's double opt-in
+    (§97). The recipient has no account and may not be the person who typed the
+    address, so: prospect footer, no greeting by name, and a remove link as
+    prominent as it can reasonably be. Both links open website pages that POST
+    the token; mail scanners prefetch links, so a GET must never act. #}
+{% set footer_audience = "prospect" %}
+{% block title %}Confirm your place on the waitlist{% endblock %}
+{% block preheader %}One click to confirm — or ignore this and you'll hear nothing more.{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Waitlist") }}
+{{ ui.heading("Confirm your place on the waitlist.") }}
+{{ ui.p("Someone — hopefully you — asked to hear when Tauka's next Amharic pod forms. Confirm and we'll keep your place.") }}
+
+<div style="margin:28px 0;">{{ ui.button(web_base_url ~ "/waitlist/confirm?token=" ~ token, "Confirm my place") }}</div>
+
+{{ ui.p("Didn't ask for this? Ignore this email. An unconfirmed entry is deleted after 7 days and we won't write again.") }}
+<div style="margin-top:6px;">{{ ui.quiet_link(web_base_url ~ "/waitlist/remove?token=" ~ token, "Remove this address now") }}</div>
+
+{{ ui.divider() }}
+
+{{ ui.p("A confirmed entry is kept for 12 months, then deleted unless you sign up. You can remove it any time with the link above.") }}
+
+{% endblock %}

@@ -5,3 +5,9 @@
 # Rendered messages from EMAIL_PROVIDER=console — local artefacts, and they
 # contain real recipient addresses from test runs.
 .outbox/
+
+.env.demo
+
+# Compiled Python: never commit (138 had been tracked until 2026-10-20).
+__pycache__/
+*.py[cod]

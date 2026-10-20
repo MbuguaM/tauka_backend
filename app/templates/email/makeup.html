@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by makeup_delivery (enrolment plan §2f item 5, §103).
+    kind = "booked"   — once, when an admin books the make-up.
+    kind = "reminder" — once, within a day of it.
+    audience = "learner" | "tutor". `when` is already in the recipient's own
+    timezone. A learner is told the group size, never the other learners' names. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ when }} · {{ minutes }} minutes{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Make-up session") }}
+{% if kind == "booked" %}
+{{ ui.heading("Your make-up session is booked.") }}
+{% else %}
+{{ ui.heading("Your make-up session is tomorrow.") }}
+{% endif %}
+
+{{ ui.p(when ~ " · " ~ minutes ~ " minutes · " ~ (group_size ~ " learner" ~ ("s" if group_size != 1 else ""))) }}
+
+{% if audience == "tutor" %}
+{{ ui.p("Open the Tauka app and find it under Make-up sessions on your Tutor Dashboard. Join from there. If it has no call link yet, add one there. After the session, mark each learner attended, absent or excused.") }}
+{% else %}
+{{ ui.p("This is one of the live sessions your plan includes this month, with one of your own tutors, while your pod is forming. Join from the Learn tab in the Tauka app a few minutes before it starts.") }}
+{% endif %}
+
+{{ ui.divider() }}
+{{ ui.p("Can't make it? Reply to support@tauka.io before it starts.") }}
+
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent once by pause_service.daily (enrolment plan 4.4, §111), a week before a
+    pause reaches its 3 months. `ends` is in the learner's own timezone. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}Your pause ends {{ ends }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Your pause") }}
+{{ ui.heading("Your pause ends next week.") }}
+
+{{ ui.p("Your pause ends on " ~ ends ~ ". To come back, choose a plan. You'll go into the next pod formation at your level, ahead of new learners, and live sessions carry on while it forms.") }}
+{{ ui.button(web_base_url ~ "/account/subscription", "Choose a plan") }}
+
+{{ ui.divider() }}
+{{ ui.p("If you don't come back by then, your enrolment closes. Your progress and the lessons you've unlocked stay with you, but any carried-forward live sessions are forfeited, as on a cancellation.") }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

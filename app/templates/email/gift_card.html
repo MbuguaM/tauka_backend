@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by commerce_service (enrolment plan Track 10, §139) to whoever bought a
+    gift card, with the code to pass on. #}
+{% set footer_audience = "supporter" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ months }} month{{ "s" if months != 1 }} of Tauka {{ tier }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Gift card") }}
+{{ ui.heading("Thank you. Here's the code to give.") }}
+{{ ui.p("It's " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of the Tauka " ~ tier ~ " plan. The person you give it to redeems it on tauka.io (Account → Gift card) or when they sign up. It's valid for a year.") }}
+{% call ui.panel() %}
+<div style="font-family:monospace;font-size:24px;letter-spacing:4px;text-align:center;padding:12px 0;">{{ code }}</div>
+{% endcall %}
+{{ ui.p("Keep this email: the code is the gift.") }}
+
+{{ ui.divider() }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

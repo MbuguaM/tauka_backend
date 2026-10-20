@@ -43,6 +43,7 @@ _DEFAULTS = {
 # is a genuine fault and is allowed to surface as a 500.
 REFUSALS = {
     "invalid_duration": "Sessions are 25 or 50 minutes.",
+    "only_25_minutes": "The sessions you have left were bought as 25-minute sessions. Book 25 minutes, or buy a 50-minute session.",
     "invalid_outcome": "Mark a session as completed or as a no-show.",
     "not_your_session": "Only the tutor who taught it can mark this session.",
     "not_markable": "That session has already been marked or cancelled.",
@@ -237,6 +238,14 @@ def _parse_time(raw: str) -> time:
     return time.fromisoformat(str(raw)[:8] if len(str(raw)) >= 8 else str(raw))
 
 
+def _minute_of_day(raw: str) -> int:
+    """"HH:MM[:SS]" -> minutes past midnight. Accepts "24:00:00", which Postgres
+    stores for a window that runs to the end of the day (the web schedule offers
+    every hour, so the last one ends at 24:00) and `time` cannot represent."""
+    h, m = str(raw).split(":")[:2]
+    return int(h) * 60 + int(m)
+
+
 def expand_slots(tutor_ids: list[str], duration: int, horizon_days: int) -> list[dict]:
     """Turn weekly availability windows into concrete future instants.
 
@@ -245,9 +254,10 @@ def expand_slots(tutor_ids: list[str], duration: int, horizon_days: int) -> list
     it here rather than in the client means one implementation of the timezone
     arithmetic instead of three.
 
-    `day_of_week` is 0=Sun..6=Sat, the convention the client already uses and the
-    one `app.generate_cohort_sessions` converts from. Python's `weekday()` is
-    0=Mon, so the conversion is explicit below rather than assumed.
+    `day_of_week` is 0=Mon..6=Sun — the platform convention (fixed 2026-10-17,
+    enrolment plan §2g), the same as Python's `weekday()`. This function used to
+    read it as 0=Sun..6=Sat while the web schedule wrote 0=Mon, so every 1-on-1
+    slot was offered one day early.
     """
     from zoneinfo import ZoneInfo
 
@@ -271,8 +281,8 @@ def expand_slots(tutor_ids: list[str], duration: int, horizon_days: int) -> list
             tz = ZoneInfo("UTC")
 
         try:
-            start = _parse_time(w["start_time"])
-            end = _parse_time(w["end_time"])
+            start_min = _minute_of_day(w["start_time"])
+            end_min = _minute_of_day(w["end_time"])
         except (ValueError, KeyError, TypeError):
             logger.warning("unparseable availability window %s", w.get("id"))
             continue
@@ -280,10 +290,11 @@ def expand_slots(tutor_ids: list[str], duration: int, horizon_days: int) -> list
         want_dow = int(w.get("day_of_week", 0))
         cursor: date = now.astimezone(tz).date()
         for _ in range(horizon_days + 1):
-            # Python weekday(): 0=Mon..6=Sun → convert to 0=Sun..6=Sat.
-            if (cursor.weekday() + 1) % 7 == want_dow:
-                slot_start = datetime.combine(cursor, start, tzinfo=tz)
-                window_end = datetime.combine(cursor, end, tzinfo=tz)
+            # Both 0=Mon..6=Sun: no conversion.
+            if cursor.weekday() == want_dow:
+                midnight = datetime.combine(cursor, time(0), tzinfo=tz)
+                slot_start = midnight + timedelta(minutes=start_min)
+                window_end = midnight + timedelta(minutes=end_min)
                 while slot_start + timedelta(minutes=duration) <= window_end:
                     instant = slot_start.astimezone(timezone.utc)
                     if now < instant <= horizon:
@@ -380,6 +391,12 @@ async def book(student_id: str, tutor_id: str, starts_at: str, duration: int,
     """Book a slot. Every rule is inside `app.book_one_to_one`, on purpose."""
     if duration not in DURATIONS:
         raise BookingRefused("invalid_duration")
+    if duration == 50:
+        # Plan 2.6 (§129): a 25-minute purchase can't be stretched to 50.
+        from app.services.addon_service import fifty_minute_units
+        bal = (await get_balance(student_id)).get("balance")
+        if bal is not None and bal > 0 and fifty_minute_units(student_id, bal) <= 0:
+            raise BookingRefused("only_25_minutes")
     try:
         result = db.schema("app").rpc("book_one_to_one", {
             "p_student": student_id,
@@ -397,12 +414,23 @@ async def book(student_id: str, tutor_id: str, starts_at: str, duration: int,
 
     session_id = result.data if isinstance(result.data, str) else None
     balance = await get_balance(student_id)
+    # Plan 2.6: more than 4 1:1s this week -> point to Intensive (bookings are
+    # records, not telemetry, E-16). Display only.
+    suggest = False
+    try:
+        from app.services.addon_service import suggest_intensive
+        tier = ((db.schema("app").table("student").select("tier").eq("id", student_id).limit(1)
+                 .execute()).data or [{}])[0].get("tier")
+        suggest = suggest_intensive(student_id, tier)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("intensive suggestion failed: %s", exc)
     return {
         "session_id": session_id,
         "tutor_id": tutor_id,
         "starts_at": starts_at,
         "duration_minutes": duration,
         "balance_remaining": balance["balance"],
+        "suggest_intensive": suggest,
     }
 
 

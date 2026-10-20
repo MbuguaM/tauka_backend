@@ -273,6 +273,20 @@ class ProvisionAccountRequest(BaseModel):
     # app.tutor_referral_link.code is 4..64.
     referral_code: Optional[str] = Field(None, min_length=4, max_length=64)
     source_platform: Optional[str] = Field(None, max_length=32)
+    # Enrolment plan H8. The signup form's three optional consents, keyed by
+    # purpose (enrolment_service.CONSENT_PURPOSES). None = the client asked
+    # nothing (an older page, or a sign-in with nothing pending): record
+    # nothing. A dict records one row per purpose, and a purpose missing from it
+    # is recorded as not granted.
+    consents: Optional[dict[Literal["session_recording", "pronunciation_profile", "model_training"], bool]] = None
+    # Enrolment plan 1.7: the goal picked on the placement result. The closed
+    # vocabulary of matching_preferences_page.dart (matched against tutor
+    # specialisations). Written only when the profile has none.
+    learning_goal: Optional[Literal["conversation", "family", "heritage", "travel", "business", "exam"]] = None
+    # Plan 7.10: the banner A/B arm, carried from the visit to the account (§136).
+    banner_arm: Optional[Literal["dated", "static"]] = None
+    # Track 10 (§139): a community partner's code (?pref=), attributed once.
+    partner_code: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9_-]{4,40}$")
 
 
 class ProvisionAccountResponse(BaseModel):
@@ -282,6 +296,70 @@ class ProvisionAccountResponse(BaseModel):
     already_provisioned: bool
     user_type: str
     referral: Optional[dict] = None
+    consents_recorded: int = 0
+
+
+class WaitlistRequest(BaseModel):
+    """`POST /waitlist` (enrolment plan H2). Email only — no phone or WhatsApp
+    until L-011 is settled, and nothing about a child (L-012)."""
+    email: EmailStr
+    goal: Optional[Literal["conversation", "family", "travel", "heritage", "business", "exam"]] = None
+    band: Optional[Literal["americas", "europe", "ea_gulf", "asia"]] = None
+    pace_hours: Optional[Literal[5, 10, 20]] = None
+    email_opt_in: bool = False
+    source: Optional[Literal["home_hero", "pricing", "other"]] = None
+    # Plan 1.8 (L-012, behind the family_waitlist flag): a PARENT's entry for a
+    # 15-17-year-old. The child's age only; never a name or date of birth.
+    child_age_band: Optional[Literal["15", "16", "17"]] = None
+    # Plan 7.10: the banner A/B arm this visitor saw.
+    banner_arm: Optional[Literal["dated", "static"]] = None
+
+
+class TutorApplicationRequest(BaseModel):
+    """`POST /tutor-applications` (enrolment plan §2j J2). Mirrors the /teach
+    form. Stored in `app.tutor_application` since §120 (L-017); free text is
+    bounded and rendered only autoescaped."""
+    name: str = Field(..., min_length=1, max_length=120)
+    email: EmailStr
+    location: str = Field("", max_length=120)
+    languages: str = Field(..., min_length=1, max_length=300)
+    experience: Optional[Literal["0 — never taught", "1–2 years", "3–5 years", "5+ years"]] = None
+    specialisations: list[Literal[
+        "Beginners", "Heritage learners", "Business / professional",
+        "Children", "Academic / linguistics", "Conversation",
+    ]] = Field(default_factory=list, max_length=6)
+    video: str = Field("", max_length=500, pattern=r"^(https?://\S+)?$")
+    why: str = Field("", max_length=3000)
+    source: str = Field("", max_length=120)
+    # Honeypot: hidden from people; a filled value is accepted and dropped.
+    website: str = Field("", max_length=200)
+
+
+class Phase0StartRequest(BaseModel):
+    """`POST /enrolment/start` (enrolment plan 1.3). Starting Phase 0 is the only
+    client-initiated write to `app.enrolment_state`; every other transition is
+    the server's (phase0_service)."""
+    course_id: str = Field(..., pattern=r"^[0-9a-fA-F-]{36}$")
+    pace_pledge_hours: Optional[Literal[5, 10, 20]] = None
+    band: Optional[Literal["americas", "europe", "ea_gulf", "asia"]] = None
+
+
+class SlotPick(BaseModel):
+    slot_id: str = Field(..., pattern=r"^[0-9a-fA-F-]{36}$")
+    favourite: bool = False
+
+
+class SlotChoicesRequest(BaseModel):
+    """`POST /enrolment/slots` (plan 3.1, §104): replaces the learner's choices.
+    Every slot must be active and in `band`."""
+    band: Literal["americas", "europe", "ea_gulf", "asia"]
+    slots: list[SlotPick] = Field(default_factory=list, max_length=40)
+
+
+class WaitlistTokenRequest(BaseModel):
+    """The token from the waitlist confirmation email (secrets.token_urlsafe(32),
+    43 characters)."""
+    token: str = Field(..., min_length=20, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class ClaimReferralRequest(BaseModel):

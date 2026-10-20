@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by schedule_service (enrolment plan 4.5, §113).
+    kind = "proposed": ops asks the pod to move; every member must agree in the app.
+    kind = "applied":  everyone agreed and the new time is in place.
+    change_kind = "permanent" | "temporary" (with ends_on). `first_new` is the
+    first session at the new time, already in the recipient's own timezone. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ pod_name }} · {{ first_new }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow(pod_name) }}
+{% if kind == "proposed" %}
+{{ ui.heading("Can your pod meet at a different time?") }}
+{% if change_kind == "temporary" %}
+{{ ui.p("We'd like to move your pod's sessions from " ~ starts_on ~ " until " ~ ends_on ~ ", then go back to your usual time. The first session at the new time would be " ~ first_new ~ ".") }}
+{% else %}
+{{ ui.p("We'd like to move your pod to a new weekly time from " ~ starts_on ~ ". The first session at the new time would be " ~ first_new ~ ".") }}
+{% endif %}
+{% if audience == "tutor" %}
+{{ ui.p("The time is inside your availability. Nothing changes unless every learner in the pod agrees.") }}
+{% else %}
+{{ ui.p("It only happens if everyone in the pod agrees. Open the Learn tab in the Tauka app to say yes or no. If the new time doesn't work for you, say no and your pod keeps its usual time.") }}
+{% endif %}
+{% else %}
+{{ ui.heading("Your pod's new time is in place.") }}
+{% if change_kind == "temporary" %}
+{{ ui.p("Everyone agreed. From " ~ starts_on ~ " until " ~ ends_on ~ " your pod meets at the new time, starting " ~ first_new ~ ". After that it goes back to your usual time.") }}
+{% else %}
+{{ ui.p("Everyone agreed. Your pod meets at its new weekly time, starting " ~ first_new ~ ".") }}
+{% endif %}
+{% if calendar %}
+{{ ui.p("Your sessions in the Tauka app show the new times. The attached calendar file has them too: open it to update your calendar, and the old times are removed.") }}
+{% else %}
+{{ ui.p("Your sessions in the Tauka app show the new times. If you added your pod to a calendar, update it there too.") }}
+{% endif %}
+{% endif %}
+
+{{ ui.divider() }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

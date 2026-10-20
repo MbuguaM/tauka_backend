@@ -55,6 +55,14 @@ async def accept_offer(offer_id: str, user_id: str = Depends(get_current_user)):
     result = await offer_service.accept(user_id, offer_id)
     if not result.get("accepted") and result.get("reason") == "not_found":
         raise HTTPException(status_code=404, detail="Offer not found")
+    if result.get("accepted") and result.get("cohort_status") == "active":
+        # Plan 3.5: the pod is live — placement emails to whoever hasn't had one
+        # (everyone, when this accept is the one that activated it). Bounded and
+        # non-fatal; the daily job catches anything this misses.
+        from app.core.followup import run_followup
+        from app.services import placement_service
+        await run_followup(placement_service.notify_cohort(result["cohort_id"]),
+                           label=f"placement notices after accept in pod {result['cohort_id']}")
     return result
 
 

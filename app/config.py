@@ -1,9 +1,13 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # TAUKA_ENV_FILE=.env.demo points a run at the local Supabase stack
+        # (DEMO.md). Unset, nothing changes.
+        env_file=os.environ.get("TAUKA_ENV_FILE", ".env"),
         case_sensitive=False,
         extra="ignore",
     )
@@ -55,6 +59,35 @@ class Settings(BaseSettings):
     stripe_price_term_installment: str = ""
     stripe_price_gift_1mo: str = ""
     stripe_price_gift_3mo: str = ""
+    # Push (plan 6.2): off until Firebase is configured and send-push deployed (FC-008, O-20).
+    push_enabled: bool = False
+    # WhatsApp (plan 6.1, §133): console | meta. Behind the whatsapp_reminders flag too.
+    whatsapp_provider: str = "console"
+    whatsapp_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_verify_token: str = ""
+    whatsapp_app_secret: str = ""
+    # Telegram for tutor ops (plan 6.4): one bot, one ops group. Empty = off.
+    telegram_bot_token: str = ""
+    telegram_ops_chat_id: str = ""
+    # M-Pesa (plan 2.4, §130): Daraja STK push. All empty = M-Pesa refuses
+    # with not_configured. Prices are whole Kenyan shillings per month.
+    mpesa_env: str = "sandbox"
+    mpesa_consumer_key: str = ""
+    mpesa_consumer_secret: str = ""
+    mpesa_shortcode: str = ""
+    mpesa_passkey: str = ""
+    mpesa_callback_token: str = ""
+    mpesa_kes_learner: int = 0
+    mpesa_kes_tutor: int = 0
+    mpesa_kes_intensive: int = 0
+    # The milestone guarantee (Track 10, §2b): a 100%-off coupon for the granted months.
+    stripe_coupon_guarantee: str = ""
+    # 1:1 add-ons (plan 2.6, §129): one-time prices, the pricing page's products.
+    stripe_price_addon_1v1_50: str = ""
+    stripe_price_addon_1v1_25: str = ""
+    stripe_price_addon_bundle4_50: str = ""
+    stripe_price_addon_bundle4_25: str = ""
 
     # ── Email ─────────────────────────────────────────────────────────────────
     # Provider: "resend" (production), "smtp" (any SMTP host, incl. a local

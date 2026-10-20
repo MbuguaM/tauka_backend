@@ -5,6 +5,62 @@ from app.config import settings
 
 _bearer = HTTPBearer()
 
+# Supabase signs user tokens either with the project's shared secret (HS256, the
+# legacy scheme production uses today) or with an asymmetric signing key
+# (ES256/RS256) published at the project's JWKS endpoint — the default for new
+# projects, for the local stack (`supabase start`), and for any project after
+# Supabase migrates it to signing keys. Accepting only HS256 401'd every call in
+# the local demo, and would do the same in production on that migration.
+_ASYMMETRIC_ALGS = ("ES256", "RS256")
+_jwks_client: jwt.PyJWKClient | None = None
+
+
+def _jwks() -> jwt.PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = jwt.PyJWKClient(
+            f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json",
+            cache_keys=True,
+            lifespan=600,
+        )
+    return _jwks_client
+
+
+def _verification_key(token: str) -> tuple[object, list[str]]:
+    """The key and the single algorithm a token must verify with.
+
+    The algorithm comes from the token header but is never trusted on its own:
+    HS256 is only ever checked against the shared secret, and an asymmetric
+    token only against the public key the JWKS publishes for its `kid`, whose
+    own algorithm must match. A token cannot pick a weaker pairing.
+    """
+    alg = jwt.get_unverified_header(token).get("alg")
+    if alg == "HS256":
+        if not settings.supabase_jwt_secret:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="SUPABASE_JWT_SECRET is not configured",
+            )
+        return settings.supabase_jwt_secret, ["HS256"]
+    if alg in _ASYMMETRIC_ALGS:
+        if not settings.supabase_url:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="SUPABASE_URL is not configured",
+            )
+        try:
+            signing_key = _jwks().get_signing_key_from_jwt(token)
+        except jwt.PyJWKClientConnectionError:
+            # Fail closed, and say why: an unreachable JWKS is not a bad token.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not fetch signing keys",
+            )
+        if signing_key.algorithm_name != alg:
+            raise jwt.InvalidAlgorithmError("token alg does not match its key")
+        return signing_key.key, [alg]
+    raise jwt.InvalidAlgorithmError(f"unsupported alg {alg!r}")
+
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
@@ -13,17 +69,12 @@ def get_current_user(
     Verify the Supabase-issued JWT and return the user's UUID (sub claim).
     Raises 401 if the token is missing, expired, or has an invalid signature.
     """
-    if not settings.supabase_jwt_secret:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="SUPABASE_JWT_SECRET is not configured",
-        )
-
     try:
+        key, algorithms = _verification_key(credentials.credentials)
         payload = jwt.decode(
             credentials.credentials,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
+            key,
+            algorithms=algorithms,
             # REQUIRED. Supabase issues user tokens with aud="authenticated".
             # PyJWT 2.x raises InvalidAudienceError when a token carries an
             # `aud` claim and the caller does NOT declare an expected audience
@@ -40,7 +91,7 @@ def get_current_user(
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except jwt.InvalidTokenError:
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",

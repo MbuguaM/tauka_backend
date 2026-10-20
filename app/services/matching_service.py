@@ -52,7 +52,7 @@ _DEFAULTS = {
 }
 
 LINK_ROLES = ("home", "guest")
-LINK_SOURCES = ("referral", "matched", "admin", "handoff")
+LINK_SOURCES = ("referral", "matched", "admin", "handoff", "addon")   # addon: plan 2.6, E-15 (§129)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────

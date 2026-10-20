@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by dst_service (enrolment plan 6.5) about a week before a clock change
+    moves a pod session's local time. Times are in the recipient's own zone. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ pod_name }}: {{ now }} your time from {{ when }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow(pod_name) }}
+{{ ui.heading("The clocks change.") }}
+{{ ui.p("Your pod's time stays the same where it's set, but for you it moves by an hour. From " ~ when ~ " it meets at " ~ now ~ " your time (it was " ~ was ~ ").") }}
+{{ ui.p("The Learn tab in the app always shows the right time.") }}
+
+{{ ui.divider() }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

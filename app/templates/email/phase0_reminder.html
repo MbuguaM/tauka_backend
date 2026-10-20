@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by phase0_reminder_service (enrolment plan 1.3, §127): weekly while in
+    Phase 0, and 14 and 3 days before the target intake's lesson deadline.
+    kind = weekly | deadline_14 | deadline_3 #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{% if deadline %}Finish Phase 0 by {{ deadline }} to join the {{ intake }} pods{% else %}Your Phase 0{% endif %}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Phase 0") }}
+{% if kind == "deadline_3" %}
+{{ ui.heading(days_left ~ " day" ~ ("s" if days_left != 1 else "") ~ " left.") }}
+{{ ui.p("Finish the alphabet lesson by " ~ deadline ~ " to join the " ~ intake ~ " pods. If you miss it, nothing is lost: you'll join the next formation instead.") }}
+{% elif kind == "deadline_14" %}
+{{ ui.heading("Two weeks to the " ~ intake ~ " pods.") }}
+{{ ui.p("Your pod forms after " ~ deadline ~ ". Phase 0 is the introduction and the alphabet; finish the alphabet lesson by then and you're in.") }}
+{% else %}
+{{ ui.heading("A little Fidel this week?") }}
+{{ ui.p("Phase 0 is the introduction and the alphabet. A few short sessions a week gets most people through it" ~ (" before " ~ deadline ~ ", the deadline for the " ~ intake ~ " pods." if deadline else ".")) }}
+{% endif %}
+{{ ui.p("Open the Tauka app: Learn → Phase 0. Already read the Fidel? Ask for a test-out there and skip the alphabet.") }}
+
+{{ ui.divider() }}
+{{ ui.quiet_link(off_url, "Stop these reminders") }}
+{{ ui.p("Questions? Reply to support@tauka.io.") }}
+
+{% endblock %}

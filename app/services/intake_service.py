@@ -92,6 +92,7 @@ def _rows_to_config(rows: list[dict]) -> MatchConfig:
         cohort_min=num("cohort_min", default.cohort_min, int),
         cohort_max=num("cohort_max", default.cohort_max, int),
         min_preferences=num("min_preferences", default.min_preferences, int),
+        min_catalogue_slots=num("min_catalogue_slots", default.min_catalogue_slots, int),
         session_minutes=num("session_minutes", default.session_minutes, int),
         offer_ranks=num("offer_ranks", default.offer_ranks, int),
         offer_ttl_hours=num("offer_ttl_hours", default.offer_ttl_hours, int),
@@ -103,6 +104,7 @@ def _rows_to_config(rows: list[dict]) -> MatchConfig:
         experience_years=num("experience_years", default.experience_years, int),
         referral_preference=raw.get("match.referral_preference",
                                     default.referral_preference),
+        low_volume_pool=num("low_volume_pool", default.low_volume_pool, int),
         weights=weights,
     )
 
@@ -121,22 +123,54 @@ def load_config() -> MatchConfig:
         return MatchConfig()
 
 
-def is_intake_day(today: date | None = None) -> bool:
-    """`match.intake_days` (default "1,15"), the same cadence-guard shape as
-    `payout.cadence_day` — one daily cron, many jobs behind their own clocks."""
-    today = today or datetime.now(timezone.utc).date()
+def _run_days_after_cutoff() -> int:
+    """`match.run_days_after_cutoff` (default 1). Tir's lesson deadline closes
+    5 Jan, so it is matched on 6 Jan: a 24 h offer round, its expiry and a
+    second round all land before formation on 9 Jan."""
     try:
         result = db.schema("app").table("config").select("value").eq(
-            "key", "match.intake_days").limit(1).execute()
-        raw = (result.data or [{}])[0].get("value") or "1,15"
+            "key", "match.run_days_after_cutoff").limit(1).execute()
+        return max(0, int((result.data or [{}])[0].get("value") or 1))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("intake day config read failed: %s", exc)
-        raw = "1,15"
+        logger.warning("run day config read failed: %s", exc)
+        return 1
+
+
+def due_intakes(today: date | None = None) -> list[dict]:
+    """Intakes to match today (§102, plan 3.4; E-02 retired `match.intake_days`).
+
+    Due = still `scheduled`, the run day (`cutoff_closes` + N) has come, formation
+    hasn't, and no cycle has been run for it yet. "Has come" rather than "is
+    today", so a day the cron didn't fire is caught up the next morning instead
+    of skipping a formation. Rehearsal intakes are returned too; the caller runs
+    them dry.
+    """
+    today = today or datetime.now(timezone.utc).date()
+    lag = timedelta(days=_run_days_after_cutoff())
     try:
-        days = {int(p.strip()) for p in raw.split(",") if p.strip()}
-    except ValueError:
-        days = {1, 15}
-    return today.day in days
+        rows = db.schema("app").table("intake").select(
+            "id, ethiopic_month, ec_year, cutoff_closes, formation_date, mode, status"
+        ).eq("status", "scheduled").order("formation_date").execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.error("intake calendar read failed: %s", exc)
+        return []
+
+    def d(v) -> date:
+        return v if isinstance(v, date) else date.fromisoformat(str(v)[:10])
+
+    due = [r for r in rows if d(r["cutoff_closes"]) + lag <= today < d(r["formation_date"])]
+    if not due:
+        return []
+    try:
+        ran = db.schema("app").table("intake_cycle").select("intake_id").in_(
+            "intake_id", [r["id"] for r in due]).execute().data or []
+        done = {r["intake_id"] for r in ran}
+    except Exception as exc:  # noqa: BLE001
+        # Unknown means don't run: a duplicate live run is refused by the index
+        # anyway, but a duplicate rehearsal would just be noise.
+        logger.error("intake cycle read failed: %s", exc)
+        return []
+    return [r for r in due if r["id"] not in done]
 
 
 # ── Loading the pool ─────────────────────────────────────────────────────────
@@ -242,8 +276,43 @@ def _cycles_waited_map(student_ids: list[str]) -> dict[str, int]:
     return out
 
 
-def load_pool() -> list[StudentIn]:
+def _enrolled_for(intake_id: str) -> set[str]:
+    """Who the protocol says is matched at this formation (§102): learners with
+    a confirmed seat aimed at it (finished Phase 0 and paid), plus everyone in
+    the wait pool, who get first priority at the next formation (plan 3.7)."""
+    try:
+        rows = db.schema("app").table("enrolment_state").select(
+            "student_id, state, target_intake_id"
+        ).in_("state", ["seat_confirmed", "wait_pool"]).execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.error("enrolment read failed: %s", exc)
+        return set()
+    # Track 10 (§140): a band-only intake takes the wait pool of that band only.
+    band = None
+    try:
+        got = db.schema("app").table("intake").select("band").eq("id", intake_id).limit(1).execute().data or []
+        band = got[0].get("band") if got and isinstance(got[0], dict) else None
+    except Exception:  # noqa: BLE001
+        band = None
+    bands = {}
+    if band:
+        try:
+            bands = {r["student_id"]: r.get("band") for r in db.schema("app").table("enrolment_state")
+                     .select("student_id, band").execute().data or []}
+        except Exception:  # noqa: BLE001
+            bands = {}
+    return {r["student_id"] for r in rows
+            if (r["state"] == "wait_pool" and (not band or bands.get(r["student_id"]) == band))
+            or r.get("target_intake_id") == intake_id}
+
+
+def load_pool(intake_id: str | None = None) -> list[StudentIn]:
     """Every student who has bought live sessions and is not already in one.
+
+    With an `intake_id` (a calendar run, §102) the pool is also limited to the
+    learners the enrolment protocol puts at that formation — see
+    `_enrolled_for`. Without one (an admin's ad-hoc dry run) it is every paid,
+    unseated student, as before.
 
     A student already holding a seat in a live cohort is NOT in the pool: this
     is intake, not reshuffling. Moving someone between cohorts is the drift
@@ -257,6 +326,9 @@ def load_pool() -> list[StudentIn]:
     except Exception as exc:  # noqa: BLE001
         logger.error("intake pool read failed: %s", exc)
         return []
+    if intake_id is not None:
+        allowed = _enrolled_for(intake_id)
+        rows = [r for r in rows if r["id"] in allowed]
     if not rows:
         return []
 
@@ -298,25 +370,59 @@ def load_pool() -> list[StudentIn]:
             rank=r.get("preference_rank") or 1,
         ))
 
+    # Catalogue slots (plan 3.1, §104) replace free windows for anyone who chose
+    # them: exact pod slots in the band's anchor zone, which becomes their tz.
+    from app.services import slot_service
+    try:
+        slot_windows = slot_service.windows_for(ids, load_config().session_minutes)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slot choice read failed: %s", exc)
+        slot_windows = {}
+
+    # Friend groups are matched as one unit; private-pod members are formed by
+    # ops by hand and left out of the pool (plan 3.2, §108).
+    from app.services import group_service
+    try:
+        friend_groups, private_pod = group_service.pool_groups(ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("group read failed: %s", exc)
+        friend_groups, private_pod = {}, set()
+
     lessons = _current_lesson_map(ids)
     waited = _cycles_waited_map(ids)
     priority_ids = _priority_ids(ids)
+    # Plan B8 (§132): empty unless the gender_matching flag is on.
+    from app.services.gender_service import for_matching
+    try:
+        genders = for_matching(ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gender preference read failed: %s", exc)
+        genders = {}
 
     pool: list[StudentIn] = []
     for r in sorted(rows, key=lambda x: x["id"]):
         sid = r["id"]
-        if sid in seated_ids:
+        if sid in seated_ids or sid in private_pod:
             continue
         profile = profile_of.get(sid, {})
+        chosen = slot_windows.get(sid)
+        if chosen:
+            tz = chosen[0]
+            own = [TimeWindow(day_of_week=d, start_minute=a, end_minute=b, rank=rk)
+                   for d, a, b, rk in chosen[1]]
+        else:
+            tz = profile.get("timezone")
+            own = windows.get(sid, [])
         pool.append(StudentIn(
             id=sid,
             tier=r["tier"],
             level=LEVEL_FROM_CEFR.get((r.get("assessed_level") or "").upper()),
             current_lesson=lessons.get(sid, 1),
-            tz=profile.get("timezone"),
-            windows=tuple(sorted(
-                windows.get(sid, []),
-                key=lambda w: (w.day_of_week, w.start_minute))),
+            tz=tz,
+            windows=tuple(sorted(own, key=lambda w: (w.day_of_week, w.start_minute))),
+            catalogue=bool(chosen),
+            group_id=friend_groups.get(sid, (None, 0))[0],
+            group_size=friend_groups.get(sid, (None, 0))[1],
             goal=profile.get("learning_goal"),
             style=profile.get("study_method"),
             native_language=_native_language(profile.get("known_languages")),
@@ -324,6 +430,9 @@ def load_pool() -> list[StudentIn]:
             cycles_waited=waited.get(sid, 0),
             locked_tutor_id=matching_service.locked_by_commitment(sid),
             referral_tutor_id=matching_service.preferred_home_tutor(sid),
+            gender=genders.get(sid, {}).get("gender"),
+            same_gender_tutor=genders.get(sid, {}).get("same_gender_tutor") or "none",
+            same_gender_pod=genders.get(sid, {}).get("same_gender_pod") or "none",
         ))
     return pool
 
@@ -410,8 +519,25 @@ def load_tutors() -> list[TutorIn]:
         logger.warning("tutor load read failed: %s", exc)
         load_of = {}
 
+    from app.services.gender_service import for_matching
+    try:
+        tutor_genders = for_matching(ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tutor gender read failed: %s", exc)
+        tutor_genders = {}
+
+    # Plan 8.3: a tutor on an approved holiday on the run day forms no pod.
+    from app.services.tutor_ops_service import on_holiday
+    try:
+        away = on_holiday(ids, datetime.now(timezone.utc).date())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("holiday read failed: %s", exc)
+        away = set()
+
     out: list[TutorIn] = []
     for tid in ids:
+        if tid in away:
+            continue
         profile = profile_of.get(tid)
         if not profile:
             continue
@@ -428,6 +554,7 @@ def load_tutors() -> list[TutorIn]:
             teaching_style=profile.get("teaching_style"),
             native_language=profile.get("native_language"),
             years_experience=profile.get("years_experience"),
+            gender=tutor_genders.get(tid, {}).get("gender"),
         ))
     return out
 
@@ -495,6 +622,7 @@ async def run_cycle(
     mode: str = "dry_run",
     cycle_date: date | None = None,
     notes: str | None = None,
+    intake: dict | None = None,
 ) -> dict:
     """One run of the whole pipeline.
 
@@ -506,7 +634,11 @@ async def run_cycle(
     """
     cfg = load_config()
     cycle_date = cycle_date or datetime.now(timezone.utc).date()
-    pool = load_pool()
+    intake_id = intake["id"] if intake else None
+    # A rehearsal (simulated) intake is matched on the old open pool so staff see
+    # realistic proposals; nobody is ever enrolled at a rehearsal, and it only
+    # ever runs dry (intake_cycle task).
+    pool = load_pool(intake_id if intake and intake.get("mode") != "rehearsal" else None)
     tutors = load_tutors()
     result = run_matcher(pool, tutors, cfg, cycle_date)
 
@@ -523,6 +655,7 @@ async def run_cycle(
         "students_deferred": 0,
         "cohorts_formed": 0,
         "notes": notes,
+        "intake_id": intake_id,
     }
     if mode == "dry_run":
         row["result"] = _serialise(result)
@@ -545,7 +678,13 @@ async def run_cycle(
         return {"ok": True, "cycle_id": cycle["id"], "mode": mode,
                 "stats": result.stats, "proposals": _serialise(result)}
 
-    return _persist_live(cycle["id"], cycle_date, cfg, result, pool)
+    if intake_id:
+        try:
+            db.schema("app").table("intake").update({"status": "matching"}).eq("id", intake_id).execute()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("intake status update failed: %s", exc)
+    start = date.fromisoformat(str(intake["formation_date"])[:10]) if intake else cycle_date
+    return _persist_live(cycle["id"], cycle_date, cfg, result, pool, start_date=start)
 
 
 def _persist_live(
@@ -554,6 +693,7 @@ def _persist_live(
     cfg: MatchConfig,
     result: MatchResult,
     pool: list[StudentIn],
+    start_date: date | None = None,
 ) -> dict:
     """Write the cohorts, the offers and the deferrals.
 
@@ -583,7 +723,8 @@ def _persist_live(
             "status": "forming",
             "max_students": cfg.cohort_max,
             "intake_cycle": cycle_date.isoformat(),
-            "start_date": cycle_date.isoformat(),
+            # Formation day for a calendar run (§102), the run date otherwise.
+            "start_date": (start_date or cycle_date).isoformat(),
         }
         try:
             created = db.schema("app").table("cohorts").insert(payload).execute()
@@ -638,6 +779,14 @@ def _persist_live(
             deferred += 1
         except Exception as exc:  # noqa: BLE001
             logger.error("deferral insert failed for %s: %s", d.student_id, exc)
+
+    # The enrolment record follows (§102): an offer -> matched; a deferral -> the
+    # wait pool. Best effort, after the matching writes, never instead of them.
+    from app.services import phase0_service
+    for sid in result.offers:
+        phase0_service.advance(sid, ("seat_confirmed", "wait_pool"), "matched")
+    for d in result.deferrals:
+        phase0_service.advance(d.student_id, ("seat_confirmed",), "wait_pool")
 
     try:
         db.schema("app").table("intake_cycle").update({

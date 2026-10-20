@@ -51,7 +51,7 @@ _STUDENT = "student"
 def _profile(user_id: str) -> dict | None:
     result = (
         db.schema("app").table("user_profiles")
-        .select("id, user_type, first_name, age_confirmed_at, completed_at")
+        .select("id, user_type, first_name, age_confirmed_at, completed_at, learning_goal")
         .eq("id", user_id).limit(1).execute()
     )
     return (result.data or [None])[0]
@@ -72,6 +72,10 @@ async def provision(
     age_confirmed: bool,
     referral_code: str | None = None,
     source_platform: str | None = None,
+    consents: dict[str, bool] | None = None,
+    learning_goal: str | None = None,
+    banner_arm: str | None = None,
+    partner_code: str | None = None,
 ) -> dict:
     """Create the profile and student rows for an already-authenticated user.
 
@@ -95,6 +99,10 @@ async def provision(
             # account is created. The web's checkbox recorded nothing while the
             # web created nothing, which was correct then and is not now.
             payload["age_confirmed_at"] = datetime.now(timezone.utc).isoformat()
+        if learning_goal:
+            # Enrolment plan 1.7: the placement result's goal (closed vocabulary,
+            # validated by the request model).
+            payload["learning_goal"] = learning_goal
 
         try:
             db.schema("app").table("user_profiles").insert(payload).execute()
@@ -114,6 +122,22 @@ async def provision(
                 ).eq("id", user_id).execute()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("provision: age backfill failed for %s: %s", user_id, exc)
+        # Plan 1.7: a goal from the placement result fills an empty one, never
+        # overwrites one the learner chose in the app.
+        if learning_goal and not existing.get("learning_goal"):
+            try:
+                db.schema("app").table("user_profiles").update({"learning_goal": learning_goal}) \
+                    .eq("id", user_id).execute()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("provision: goal backfill failed for %s: %s", user_id, exc)
+
+    # Plan 7.10 (§136): the banner arm, once per account. Never fatal.
+    if banner_arm in ("dated", "static"):
+        try:
+            db.schema("app").table("acquisition_arm").insert({"user_id": user_id, "arm": banner_arm}).execute()
+        except Exception as exc:  # noqa: BLE001
+            if "duplicate" not in str(exc).lower() and "unique" not in str(exc).lower():
+                logger.warning("provision: banner arm not recorded for %s: %s", user_id, exc)
 
     # `app.student` is separate and separately idempotent: a profile can exist
     # without one if an earlier provision was interrupted between the two
@@ -129,6 +153,31 @@ async def provision(
         except Exception as exc:  # noqa: BLE001
             logger.error("provision: student insert failed for %s: %s", user_id, exc)
             raise
+
+    # Track 10 (§139): a community partner's code, attributed once. Never fatal.
+    if partner_code:
+        try:
+            from app.services.commerce_service import attribute
+            attribute(user_id, partner_code)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("provision: partner attribution failed for %s: %s", user_id, exc)
+
+    from app.services import enrolment_service
+
+    # Enrolment plan H8. Non-fatal, and safe to lose: every purpose with no row
+    # reads as NOT granted (app.consent_granted), so a failure here can only
+    # under-record permission, never invent it. The account matters more.
+    consents_recorded = 0
+    if consents is not None:
+        try:
+            consents_recorded = enrolment_service.record_signup_consents(user_id, consents)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("provision: consent record failed for %s: %s", user_id, exc)
+
+    # A waitlist entry with this email is now an account (enrolment plan H2).
+    # Only when the student row is new: later sign-ins have nothing to link.
+    if created_student:
+        enrolment_service.link_waitlist_conversion(user_id)
 
     referral = None
     if referral_code:
@@ -163,4 +212,5 @@ async def provision(
         "already_provisioned": not created_profile and not created_student,
         "user_type": _STUDENT,
         "referral": referral,
+        "consents_recorded": consents_recorded,
     }

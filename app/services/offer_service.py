@@ -197,7 +197,7 @@ async def latest_deferral(student_id: str) -> dict | None:
 # told the wrong reason acts on it.
 DEFERRAL_MESSAGES = {
     "NO_TIMEZONE": "We need your timezone before we can find a group that meets at a reasonable hour for you.",
-    "TOO_FEW_PREFERENCES": "Add a few more times you are free — we need at least three to find a group.",
+    "TOO_FEW_PREFERENCES": "Pick a few more times you could make — we need more to find you a group.",
     "NO_LEVEL": "Take the placement test and we can match you with students at your level.",
     "NO_TUTOR_FOR_LEVEL": "We do not yet have a tutor certified for your level. We are recruiting.",
     "NO_SLOT_OVERLAP": "None of your available times line up with a tutor's schedule yet.",
@@ -207,6 +207,8 @@ DEFERRAL_MESSAGES = {
     "DECLINED_ALL_OFFERS": "You turned down this round's groups. We will look again next cycle.",
     "COHORT_DID_NOT_FILL": "Your group did not reach three members in time. You are first in line next cycle.",
     "OFFERS_EXPIRED": "Your offers ran out of time. We will send new ones next cycle.",
+    "GROUP_WAITING": "You're waiting for a friend in your group to finish Phase 0. You'll be matched together at the next formation they make.",
+    "GROUP_LEVEL_GAP": "You and your friends placed at different levels, and a pod has one level. Catch up together, or leave the group to be matched on your own.",
 }
 
 
@@ -283,9 +285,16 @@ async def accept(student_id: str, offer_id: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.error("offer accept update failed: %s", exc)
 
+    # The enrolment record follows the seat (§102): matched -> in_pod.
+    from app.services import phase0_service
+    phase0_service.advance(student_id, ("matched",), "in_pod")
+
     # The student's other holds are released the moment one is taken — that is
     # what returns the seats to the people waiting behind them.
     released = await _release_other_holds(student_id, offer["cycle_id"], offer_id)
+    # A friend group is seated together (plan 3.2, FC-041): once one friend takes
+    # this pod, the others' offers for OTHER pods in this cycle go.
+    released += await _align_group(student_id, offer["cycle_id"], cohort_id)
 
     link = await _ensure_teaching_link(student_id, cohort.get("tutor_id"))
     activated = await _activate_if_viable(cohort_id, cfg)
@@ -381,6 +390,33 @@ async def _release_other_holds(student_id: str, cycle_id: str, keep_id: str) -> 
     for cohort_id in sorted({r["cohort_id"] for r in others}):
         await _promote_waiting(cohort_id)
     return len(others)
+
+
+async def _align_group(student_id: str, cycle_id: str, cohort_id: str) -> int:
+    """Withdraw the student's friends' open offers for other cohorts in this
+    cycle. Their offer for THIS cohort stays — the matcher only ever offers a
+    group seats in the same candidate, so each friend holds one."""
+    try:
+        mine = db.schema("app").table("enrolment_group_member").select("group_id").eq(
+            "student_id", student_id).is_("left_at", "null").limit(1).execute().data or []
+        if not mine:
+            return 0
+        friends = [r["student_id"] for r in (db.schema("app").table("enrolment_group_member")
+                   .select("student_id").eq("group_id", mine[0]["group_id"]).is_("left_at", "null")
+                   .execute().data or []) if r["student_id"] != student_id]
+        if not friends:
+            return 0
+        rows = db.schema("app").table("match_offer").select("id, cohort_id").in_(
+            "student_id", friends).eq("cycle_id", cycle_id).eq("status", OPEN_OFFER).execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.error("group alignment read failed: %s", exc)
+        return 0
+    other = [r for r in rows if r["cohort_id"] != cohort_id]
+    for r in other:
+        await _supersede(r["id"], "a friend in your group accepted a different pod")
+    for cid in sorted({r["cohort_id"] for r in other}):
+        await _promote_waiting(cid)
+    return len(other)
 
 
 async def _fill_and_reoffer(cohort_id: str) -> None:
@@ -500,7 +536,17 @@ async def _activate_if_viable(cohort_id: str, cfg) -> bool:
     it is safe to call on every acceptance rather than exactly once.
     """
     taken = _confirmed_counts([cohort_id]).get(cohort_id, 0)
-    if taken < cfg.cohort_min:
+    # A private pod (plan 3.2, §128) is sized to its group, which may be under
+    # cohort_min: it goes live when it is full, i.e. every member accepted.
+    need = cfg.cohort_min
+    try:
+        size = (db.schema("app").table("cohorts").select("max_students").eq("id", cohort_id)
+                .limit(1).execute()).data or []
+        if size and size[0].get("max_students"):
+            need = min(need, int(size[0]["max_students"]))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cohort size read failed: %s", exc)
+    if taken < need:
         return False
     try:
         db.schema("app").table("cohorts").update({"status": "active"}).eq(
@@ -524,9 +570,10 @@ async def _activate_if_viable(cohort_id: str, cfg) -> bool:
 async def expire_due() -> dict:
     """Expire holds past their deadline and re-offer from what remains.
 
-    Runs from `/tasks/daily`. The TTL is 48h and the cycle is 14 days, so a
-    daily sweep is enough for the deadline to mean something without a second
-    cron entry the hosting plan does not have.
+    Runs from `/tasks/daily`. The TTL is 24 h (E-13, §102) and a formation's
+    matching window is days long, so a daily sweep is enough for the deadline
+    to mean something without a second cron entry the hosting plan does not
+    have. (The hold can outlive 24 h by up to a day; nobody loses a seat to that.)
     """
     now = datetime.now(timezone.utc).isoformat()
     cfg = load_config()
@@ -566,7 +613,7 @@ async def close_cycle(cycle_id: str | None = None) -> dict:
     cfg = load_config()
     try:
         query = db.schema("app").table("intake_cycle").select(
-            "id, cycle_date, status").eq("mode", "live").eq("status", "offered")
+            "id, cycle_date, status, intake_id").eq("mode", "live").eq("status", "offered")
         if cycle_id:
             query = query.eq("id", cycle_id)
         cycles = query.order("cycle_date").execute()
@@ -598,6 +645,13 @@ async def close_cycle(cycle_id: str | None = None) -> dict:
             closed += 1
         except Exception as exc:  # noqa: BLE001
             logger.error("cycle close failed: %s", exc)
+        # A calendar run's formation is done once its cycle closes (§102).
+        if cycle.get("intake_id"):
+            try:
+                db.schema("app").table("intake").update({"status": "formed"}).eq(
+                    "id", cycle["intake_id"]).eq("status", "matching").execute()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("intake status update failed: %s", exc)
         logger.info("Closed cycle %s: dissolved=%s deferred=%s",
                     cycle["id"], dissolved, deferred)
     return {"closed": closed}
@@ -661,10 +715,14 @@ async def _sweep_cycle(cycle_id: str, cfg) -> tuple[int, int]:
         logger.error("offer sweep read failed: %s", exc)
         by_student = {}
 
+    from app.services import phase0_service
     deferred = 0
     for student_id, statuses in sorted(by_student.items()):
         if "accepted" in statuses and student_id not in stranded:
             continue
+        # No seat at the end of the cycle: the wait pool, first in line next time
+        # (§102, plan 3.7). A dissolved pod's members were already in_pod.
+        phase0_service.advance(student_id, ("matched", "in_pod"), "wait_pool")
         if student_id in stranded:
             reason = "COHORT_DID_NOT_FILL"
         elif "declined" in statuses:

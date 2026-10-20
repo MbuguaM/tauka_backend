@@ -12,9 +12,9 @@ What is worth asserting:
    feature unusable in exactly the situation it launches into.
 2. **The cap is checked against the PROJECTED share, not the current one.** A cap
    checked before the assignment always passes the assignment that breaches it.
-3. **Slot expansion is timezone arithmetic**, and `day_of_week` is 0=Sun while
-   Python's `weekday()` is 0=Mon. That conversion is the kind of thing that is
-   silently wrong for six days out of seven.
+3. **Slot expansion is timezone arithmetic**, and `day_of_week` is 0=Mon like
+   Python's `weekday()` (fixed 2026-10-17: this file used to assert 0=Sun while
+   the web schedule wrote 0=Mon, so every slot was offered a day early).
 4. **A degraded read is not a zero.** A balance that failed to load must not
    render as "you have no sessions left".
 
@@ -152,10 +152,11 @@ def _availability(day_of_week, start="09:00:00", end="11:00:00", tz="UTC"):
     }]
 
 
-def test_day_of_week_is_sunday_zero_not_monday_zero():
-    """app.tutor_availability.day_of_week is 0=Sun..6=Sat — the convention the
-    client uses and the one app.generate_cohort_sessions converts from. Python's
-    weekday() is 0=Mon. Get this wrong and every slot lands one day out."""
+def test_day_of_week_is_monday_zero():
+    """app.tutor_availability.day_of_week is 0=Mon..6=Sun — what the web
+    schedule writes (its grid is Mon..Sun), what the student's preferences and
+    the matcher use, and Python's weekday(). Get it wrong and every slot lands
+    one day out."""
     with (
         patch.object(booking_service, "_weekly_windows", return_value=_availability(0)),
         patch.object(booking_service, "_taken", return_value=set()),
@@ -165,8 +166,33 @@ def test_day_of_week_is_sunday_zero_not_monday_zero():
     assert slots, "expected slots inside a 14-day horizon"
     for s in slots:
         when = datetime.fromisoformat(s["starts_at"].replace("Z", "+00:00"))
-        # 6 == Sunday in Python's weekday()
-        assert when.weekday() == 6, f"{s['starts_at']} is not a Sunday"
+        assert when.weekday() == 0, f"{s['starts_at']} is not a Monday"
+
+
+def test_windows_are_read_in_the_tutors_own_zone():
+    """09:00 Monday in Addis (UTC+3, no DST) is 06:00 UTC, on the same Monday."""
+    with (
+        patch.object(booking_service, "_weekly_windows",
+                     return_value=_availability(0, "09:00:00", "10:00:00", "Africa/Addis_Ababa")),
+        patch.object(booking_service, "_taken", return_value=set()),
+    ):
+        slots = booking_service.expand_slots(["t1"], 50, 14)
+    assert slots
+    for s in slots:
+        when = datetime.fromisoformat(s["starts_at"].replace("Z", "+00:00"))
+        assert (when.weekday(), when.hour, when.minute) == (0, 6, 0), s["starts_at"]
+
+
+def test_a_window_may_run_to_midnight():
+    """The schedule offers every hour, so the last window ends at 24:00:00 —
+    which Postgres stores and datetime.time cannot parse."""
+    with (
+        patch.object(booking_service, "_weekly_windows",
+                     return_value=_availability(2, "23:00:00", "24:00:00")),
+        patch.object(booking_service, "_taken", return_value=set()),
+    ):
+        slots = booking_service.expand_slots(["t1"], 50, 14)
+    assert slots and all(s["starts_at"][11:16] == "23:00" for s in slots)
 
 
 def test_slots_never_run_past_the_window_end():

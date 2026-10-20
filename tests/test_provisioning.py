@@ -205,3 +205,38 @@ def test_referral_is_passed_through(client, headers):
     assert seen["student_id"] == TEST_USER_ID
     assert seen["code"] == "ABCD1234"
     assert seen["source_platform"] == "tiktok"
+
+
+# ── the placement result's goal (enrolment plan 1.7) ─────────────────────────
+
+def test_goal_is_written_on_creation(client, headers):
+    store = {}
+    resp = _run(client, headers, store, {"first_name": "Hanna", "age_confirmed": True, "learning_goal": "heritage"})
+    assert resp.status_code == 200
+    assert _inserted(store, "user_profiles")["learning_goal"] == "heritage"
+
+
+def test_goal_outside_the_vocabulary_is_refused(client, headers):
+    resp = _run(client, headers, {}, {"first_name": "Hanna", "age_confirmed": True, "learning_goal": "<script>"})
+    assert resp.status_code == 422
+
+
+def test_goal_fills_an_empty_one_but_never_overwrites(client, headers):
+    store = {"user_profiles": [{"id": TEST_USER_ID, "user_type": "student", "learning_goal": None}],
+             "student": [{"id": TEST_USER_ID}]}
+    _run(client, headers, store, {"age_confirmed": True, "learning_goal": "travel"})
+    assert ("user_profiles", {"learning_goal": "travel"}) in store.get("updates", [])
+    store = {"user_profiles": [{"id": TEST_USER_ID, "user_type": "student", "learning_goal": "family"}],
+             "student": [{"id": TEST_USER_ID}]}
+    _run(client, headers, store, {"age_confirmed": True, "learning_goal": "travel"})
+    assert not [u for u in store.get("updates", []) if "learning_goal" in u[1]]
+
+
+# ── the banner arm (plan 7.10, §136) ─────────────────────────────────────────
+
+def test_banner_arm_recorded_once(client, headers):
+    store = {}
+    _run(client, headers, store, {"first_name": "Hanna", "age_confirmed": True, "banner_arm": "dated"})
+    assert _inserted(store, "acquisition_arm") == {"user_id": TEST_USER_ID, "arm": "dated"}
+    resp = _run(client, headers, {}, {"age_confirmed": True, "banner_arm": "loud"})
+    assert resp.status_code == 422

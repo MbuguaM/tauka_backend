@@ -37,7 +37,8 @@ rule.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from itertools import combinations
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -81,6 +82,17 @@ REASON_NO_SLOT_OVERLAP = "NO_SLOT_OVERLAP"
 REASON_TZ_ISOLATE = "TZ_ISOLATE"
 REASON_TOO_FEW_PEERS = "TOO_FEW_PEERS_AT_LEVEL"
 REASON_TUTORS_AT_CAPACITY = "TUTORS_AT_CAPACITY"
+# Friend groups (plan 3.2, §108b). WAITING: a member isn't in this run's ready
+# pool, so the others wait (playbook: "the faster friend waits for the slower
+# one"). LEVEL_GAP: members are at different levels and a pod has one level.
+REASON_GROUP_WAITING = "GROUP_WAITING"
+REASON_GROUP_LEVEL_GAP = "GROUP_LEVEL_GAP"
+# Plan B8 (§132, behind gender_matching): a same-gender requirement no slot or pod can meet.
+REASON_GENDER = "NO_SAME_GENDER_MATCH"
+
+# Above this many units at one slot/level, group candidates fall back to
+# group + nearest singles rather than every combination (keeps a run bounded).
+MAX_UNITS_FOR_COMBINATIONS = 40
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -101,19 +113,30 @@ class MatchConfig:
     cohort_min: int = 3
     cohort_max: int = 4
     min_preferences: int = 3
+    # Plan 3.1 (§104): a learner who chose catalogue slots needs only this many;
+    # three or more is the matching GUARANTEE, not the entry ticket (playbook).
+    min_catalogue_slots: int = 1
     session_minutes: int = 50
     offer_ranks: int = 3
-    offer_ttl_hours: int = 48
+    offer_ttl_hours: int = 24  # E-13 (§102): was 48
     overbook_slack: int = 2
     relax_after_cycles: int = 2
     tz_band_hours_relaxed: float = 3.0
     lesson_band_relaxed: int = 8
     experience_years: int = 3
     referral_preference: str = "hard"
+    # Plan 3.3 (playbook: "at low volume, collapse the soft criteria first;
+    # never relax band or level"). Below this many ready learners in a run, the
+    # soft terms (goal, style, L1, experience) score nothing, so pods form on
+    # band, level, tightness and slot preference alone. Set by `run`, recorded.
+    low_volume_pool: int = 12
+    soft_collapsed: bool = False
     weights: dict[str, float] = field(default_factory=lambda: {
         "goal": 30.0, "style": 20.0, "l1": 15.0, "experience": 10.0,
         "size_4": 25.0, "size_3": 15.0, "tightness_lesson": 10.0,
         "tightness_tz": 5.0, "slot_pref": 10.0, "tier_cohesion": 20.0,
+        # Plan B8: a same-gender PREFERENCE met (a requirement is a filter).
+        "gender": 10.0,
     })
 
     def as_dict(self) -> dict:
@@ -125,6 +148,7 @@ class MatchConfig:
             "cohort_min": self.cohort_min,
             "cohort_max": self.cohort_max,
             "min_preferences": self.min_preferences,
+            "min_catalogue_slots": self.min_catalogue_slots,
             "session_minutes": self.session_minutes,
             "offer_ranks": self.offer_ranks,
             "offer_ttl_hours": self.offer_ttl_hours,
@@ -134,6 +158,8 @@ class MatchConfig:
             "lesson_band_relaxed": self.lesson_band_relaxed,
             "experience_years": self.experience_years,
             "referral_preference": self.referral_preference,
+            "low_volume_pool": self.low_volume_pool,
+            "soft_collapsed": self.soft_collapsed,
             "weights": dict(self.weights),
         }
 
@@ -182,6 +208,18 @@ class StudentIn:
     # Resolved by `matching_service` before the pool reaches here.
     locked_tutor_id: str | None = None
     referral_tutor_id: str | None = None
+    # True when `windows` are catalogue slots (§104): exact pod slots in the
+    # band's anchor zone, which is then `tz`.
+    catalogue: bool = False
+    # A friend group (plan 3.2, §108): matched as ONE unit — all members in the
+    # same cohort or none placed. `group_size` counts every active member, so
+    # a member missing from the pool is noticed.
+    group_id: str | None = None
+    group_size: int = 0
+    # Plan B8 (§132): only set when the gender_matching flag is on.
+    gender: str | None = None
+    same_gender_tutor: str = "none"     # none | preference | requirement
+    same_gender_pod: str = "none"
 
     @property
     def cadence_class(self) -> str | None:
@@ -200,6 +238,7 @@ class TutorIn:
     teaching_style: str | None = None
     native_language: str | None = None
     years_experience: int | None = None
+    gender: str | None = None           # plan B8 (§132), when the flag is on
 
     @property
     def free_cohort_seats(self) -> int:
@@ -247,6 +286,13 @@ class Candidate:
     # Stage 4 chooses between candidates and therefore between *sets* of
     # claims — see `_candidate_order`.
     claim: tuple = ()
+    # How many friend groups this candidate seats (plan 3.2): linked groups are
+    # seated before singles (playbook fill order).
+    groups: int = 0
+    # How many members were referred by this slot's tutor (plan 3.3): the
+    # tutor-ANCHORED pod forms first (playbook fill order: anchored, private,
+    # linked, singles). Private pods are formed by ops outside the run (§128).
+    anchored: int = 0
 
     @property
     def size(self) -> int:
@@ -387,6 +433,10 @@ def _student_fits_slot(
     if not (tutor.min_level <= student.level <= tutor.max_level):
         return REASON_NO_TUTOR_FOR_LEVEL
 
+    # Plan B8: a same-gender tutor REQUIREMENT is hard; never relaxed.
+    if student.same_gender_tutor == "requirement" and (not tutor.gender or tutor.gender != student.gender):
+        return REASON_GENDER
+
     day, minute = _local_minutes(slot.start_utc, zone)
     end_minute = minute + cfg.session_minutes
     # Civil hour, both ends. Plan §3 Stage 0: "±2 hours is a proxy, not the
@@ -475,6 +525,9 @@ def score_candidate(
     """
     w = cfg.weights
     fits = [member_fit(s, tutor, cfg) for s in members]
+    if cfg.soft_collapsed:
+        # Low volume (plan 3.3): the soft criteria are collapsed, not weighed.
+        fits = [{k: 0.0 for k in f} for f in fits]
     mean_fit = sum(sum(f.values()) for f in fits) / len(fits)
 
     size = w["size_4"] if len(members) >= 4 else w["size_3"]
@@ -505,6 +558,22 @@ def score_candidate(
     modal_share = max(tiers.count(t) for t in set(tiers)) / len(tiers)
     cohesion = w["tier_cohesion"] * modal_share
 
+    # Plan B8: same-gender PREFERENCES met, as a share of those who hold one.
+    # Soft, so it collapses at low volume with the other soft criteria.
+    wanting = [s for s in members if "preference" in (s.same_gender_tutor, s.same_gender_pod)]
+    gender = 0.0
+    if wanting and not cfg.soft_collapsed:
+        met = 0.0
+        for s in wanting:
+            parts = []
+            if s.same_gender_tutor == "preference":
+                parts.append(1.0 if tutor.gender and tutor.gender == s.gender else 0.0)
+            if s.same_gender_pod == "preference":
+                others = [m for m in members if m.id != s.id]
+                parts.append(sum(1 for m in others if m.gender == s.gender) / len(others) if others else 1.0)
+            met += sum(parts) / len(parts)
+        gender = w.get("gender", 0.0) * met / len(wanting)
+
     breakdown = {
         "goal": round(sum(f["goal"] for f in fits) / len(fits), 2),
         "style": round(sum(f["style"] for f in fits) / len(fits), 2),
@@ -514,8 +583,9 @@ def score_candidate(
         "tightness": round(tightness, 2),
         "slot_preference": round(slot_pref, 2),
         "tier_cohesion": round(cohesion, 2),
+        "gender": round(gender, 2),
     }
-    total = mean_fit + size + tightness + slot_pref + cohesion
+    total = mean_fit + size + tightness + slot_pref + cohesion + gender
     return max(0, min(100, int(round(total)))), breakdown
 
 
@@ -562,10 +632,15 @@ def enumerate_candidates(
                 continue
             levels = sorted({s.level for s in in_class if s.level is not None})
             for level in levels:
-                at_level = sorted(
+                at_level_all = sorted(
                     (s for s in in_class if s.level == level),
                     key=lambda s: (s.current_lesson, s.id),
                 )
+                # Group members never ride in a singles window: a window could
+                # hold part of a group, and a group is all or none (plan 3.2).
+                at_level = [s for s in at_level_all if not s.group_id]
+                candidates.extend(_group_candidates(
+                    at_level_all, slot, tutor, cadence, level, cfg))
                 for size in range(cfg.cohort_max, cfg.cohort_min - 1, -1):
                     for i in range(0, len(at_level) - size + 1):
                         window = at_level[i:i + size]
@@ -580,6 +655,8 @@ def enumerate_candidates(
 
                         lessons = [s.current_lesson for s in window]
                         if max(lessons) - min(lessons) > lesson_band:
+                            continue
+                        if not _genders_ok(window):
                             continue
                         offsets = [
                             _offset_hours(slot.start_utc, _zone(s.tz) or ZoneInfo("UTC"))
@@ -602,8 +679,93 @@ def enumerate_candidates(
                             lesson_high=max(lessons),
                             bands_relaxed=relaxed,
                             claim=_claim(window),
+                            anchored=_anchored(window, slot),
                         ))
     return candidates
+
+
+def _make_candidate(members, slot, tutor, cadence, level, cfg, groups=0):
+    """A candidate from `members` if they satisfy the bands together, else None."""
+    bands = [cfg.bands_for(s.cycles_waited) for s in members]
+    tz_band = max(b[0] for b in bands)
+    lesson_band = max(b[1] for b in bands)
+    lessons = [s.current_lesson for s in members]
+    if max(lessons) - min(lessons) > lesson_band:
+        return None
+    if not _genders_ok(members):
+        return None
+    offsets = [_offset_hours(slot.start_utc, _zone(s.tz) or ZoneInfo("UTC")) for s in members]
+    if max(offsets) - min(offsets) > tz_band:
+        return None
+    score, breakdown = score_candidate(members, slot, tutor, cfg, lesson_band, tz_band)
+    return Candidate(
+        student_ids=tuple(sorted(s.id for s in members)),
+        slot=slot, cadence_class=cadence, level=level, score=score, breakdown=breakdown,
+        lesson_low=min(lessons), lesson_high=max(lessons),
+        bands_relaxed=(tz_band > cfg.tz_band_hours or lesson_band > cfg.lesson_band),
+        claim=_claim(members), groups=groups, anchored=_anchored(members, slot),
+    )
+
+
+def _group_candidates(at_level, slot, tutor, cadence, level, cfg) -> list[Candidate]:
+    """Candidates that seat whole friend groups (plan 3.2), plus singles.
+
+    Units are whole groups (every active member eligible at this slot and level)
+    and single students. Every combination of units that includes at least one
+    group and totals cohort_min..cohort_max is tried — a group's members need
+    not be adjacent in lesson order, so the singles' sliding window can't find
+    these. Bounded by MAX_UNITS_FOR_COMBINATIONS; past it, each group is tried
+    with its nearest singles by lesson only.
+    """
+    groups: dict[str, list[StudentIn]] = {}
+    for s in at_level:
+        if s.group_id:
+            groups.setdefault(s.group_id, []).append(s)
+    whole = [tuple(m) for m in groups.values() if m and len(m) == (m[0].group_size or len(m))]
+    if not whole:
+        return []
+    singles = [(s,) for s in at_level if not s.group_id]
+    units = sorted(whole, key=lambda u: tuple(s.id for s in u)) + singles
+    out: list[Candidate] = []
+    seen: set[tuple] = set()
+
+    def add(unit_set):
+        members = [s for u in unit_set for s in u]
+        if not cfg.cohort_min <= len(members) <= cfg.cohort_max:
+            return
+        key = tuple(sorted(s.id for s in members))
+        if key in seen:
+            return
+        seen.add(key)
+        n_groups = sum(1 for u in unit_set if u[0].group_id)
+        c = _make_candidate(members, slot, tutor, cadence, level, cfg, n_groups)
+        if c is not None:
+            out.append(c)
+
+    if len(units) <= MAX_UNITS_FOR_COMBINATIONS:
+        for k in range(1, cfg.cohort_max + 1):
+            for combo in combinations(units, k):
+                if any(u[0].group_id for u in combo):
+                    add(combo)
+    else:
+        for g in whole:
+            centre = sum(s.current_lesson for s in g) / len(g)
+            near = sorted(singles, key=lambda u: (abs(u[0].current_lesson - centre), u[0].id))
+            for n in range(0, cfg.cohort_max - len(g) + 1):
+                add((g, *near[:n]))
+    return out
+
+
+def _genders_ok(members) -> bool:
+    """Plan B8: everyone who REQUIRES a same-gender pod gets one."""
+    for s in members:
+        if s.same_gender_pod == "requirement" and any(m.gender != s.gender for m in members if m.id != s.id):
+            return False
+    return True
+
+
+def _anchored(members, slot: TutorSlot) -> int:
+    return sum(1 for s in members if s.referral_tutor_id and s.referral_tutor_id == slot.tutor_id)
 
 
 def _claim(members: list[StudentIn]) -> tuple:
@@ -627,7 +789,11 @@ def _candidate_order(c: Candidate) -> tuple:
     construction order depends on dict iteration — the difference between a
     matcher you can rerun and one you cannot.
     """
-    return (-c.score, -c.size, c.claim, c.slot.tutor_id,
+    # The playbook fill order: ANCHORED (the referring tutor's own learners in
+    # their pod, plan 3.3), private (formed by ops, §128), LINKED groups (plan
+    # 3.2), singles. Both counts are zero in a pool with no referrals or
+    # groups, so ordering there is exactly as before.
+    return (-c.anchored, -c.groups, -c.score, -c.size, c.claim, c.slot.tutor_id,
             c.slot.start_utc.isoformat(), c.student_ids)
 
 
@@ -731,6 +897,8 @@ def _try_add(
     """The grown cohort if `student` fits, else None. Every band is re-checked
     against the enlarged set: a member who fits three people need not fit four.
     """
+    if student.group_id:
+        return None                      # a group member joins only with their group
     if student.id not in edges.get(_edge_key(c.slot), set()):
         return None
     if student.cadence_class != c.cadence_class or student.level != c.level:
@@ -786,6 +954,8 @@ def _try_eject(
     and the failure mode of a subtly wrong chain is a student silently moved out
     of a cohort they were told about.
     """
+    if student.group_id:
+        return False                     # groups are never placed by a swap
     for idx, c in enumerate(chosen):
         if student.id not in edges.get(_edge_key(c.slot), set()):
             continue
@@ -793,6 +963,8 @@ def _try_eject(
             continue
         for victim_id in c.student_ids:
             victim = by_id[victim_id]
+            if victim.group_id:
+                continue                 # never pull one friend out of their group
             # The fairness floor. `_tie_key` sorts stronger claims first, so a
             # victim ordering before the student is a stronger claim.
             if _tie_key(victim) < _tie_key(student):
@@ -890,12 +1062,39 @@ def run(
                                       {"field": "student.assessed_level"}, s.cycles_waited))
             continue
         active_windows = len(s.windows)
-        if active_windows < cfg.min_preferences:
+        need = cfg.min_catalogue_slots if s.catalogue else cfg.min_preferences
+        if active_windows < need:
             deferrals.append(Deferral(
                 s.id, REASON_TOO_FEW_PREFERENCES,
-                {"have": active_windows, "need": cfg.min_preferences}, s.cycles_waited))
+                {"have": active_windows, "need": need}, s.cycles_waited))
             continue
         ready.append(s)
+
+    # Friend groups (plan 3.2): a group goes forward only whole and at one level.
+    # Otherwise every ready member waits, with the reason — never split silently.
+    by_group: dict[str, list[StudentIn]] = {}
+    for s in ready:
+        if s.group_id:
+            by_group.setdefault(s.group_id, []).append(s)
+    held: set[str] = set()
+    for gid, members in sorted(by_group.items()):
+        size = max(m.group_size for m in members) or len(members)
+        if len(members) < size:
+            for m in members:
+                deferrals.append(Deferral(m.id, REASON_GROUP_WAITING,
+                                          {"ready": len(members), "group_size": size}, m.cycles_waited))
+                held.add(m.id)
+        elif len({m.level for m in members}) > 1:
+            for m in members:
+                deferrals.append(Deferral(m.id, REASON_GROUP_LEVEL_GAP,
+                                          {"levels": sorted({mm.level for mm in members})}, m.cycles_waited))
+                held.add(m.id)
+    if held:
+        ready = [s for s in ready if s.id not in held]
+
+    # Plan 3.3: at low volume the soft criteria collapse (never band or level).
+    if len(ready) < cfg.low_volume_pool and not cfg.soft_collapsed:
+        cfg = replace(cfg, soft_collapsed=True)
 
     # Stage 1 — the feasibility graph, plus the precise reason for every student
     # who ends up with no edges at all.
@@ -1034,6 +1233,9 @@ def run(
         "students_placed": len(placed),
         "students_deferred": len(deferrals),
         "median_cycles_waited_by_tier": _median_wait_by_tier(pool),
+        # Plan 3.3: whether the soft criteria were collapsed for low volume.
+        "soft_collapsed": cfg.soft_collapsed,
+        "anchored_pods": sum(1 for c in cohorts if c.anchored),
     }
     return MatchResult(cohorts=cohorts, offers=offers, deferrals=deferrals, stats=stats)
 
