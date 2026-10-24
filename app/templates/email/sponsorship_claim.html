@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by sponsorship_service.paid (§144) to the person a sponsor named. The link carries the claim token. #}
+{% set footer_audience = "prospect" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ months }} month{{ "s" if months != 1 }} of Tauka {{ tier }}, paid for{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("A sponsored seat") }}
+{{ ui.heading((("Hello " ~ name ~ ". ") if name else "") ~ "Someone's paying for your Amharic.") }}
+{{ ui.p(sponsor ~ " has sponsored " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of the Tauka " ~ tier ~ " plan for you: lessons, live tutor sessions and AI practice.") }}
+{% if message %}{% call ui.panel() %}<i>&ldquo;{{ message }}&rdquo;</i>{% endcall %}{% endif %}
+{{ ui.p("Claim it with this link. If you don't have a Tauka account yet, you'll make one first; it's free. The link is yours alone and works for a year.") }}
+{{ ui.button(claim_url, "Claim your seat", "amber") }}
+
+{% endblock %}

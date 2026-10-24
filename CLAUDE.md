@@ -435,3 +435,11 @@ If you discover a duplicated table, mismatched column type, missing table, or a 
 - ALWAYS check `shared-db/CONFLICT_LOG.md` before creating anything new
 - The Python backend uses `supabase.schema("app").table(...)` for all table access — never omit the schema qualifier
 - When in doubt, ask the developer rather than guessing
+
+### Sponsorship (2026-10-21, §144)
+
+`sponsorship_service` + `/sponsorship` behind the `sponsorship` flag: the sponsorship waitlist
+(`sponsorship_request`, ops-reviewed, consent `sponsorship_listing`, L-024), seats for a waitlisted
+learner or a named person (`sponsorship`), paid by Stripe (`metadata.sponsorship_id`), granted like
+a gift card, swept daily (`sponsorship_cycle`). `public_list` projects only first name, country,
+reason and story: never widen it without updating L-024.

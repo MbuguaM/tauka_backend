@@ -207,11 +207,17 @@ async def test_join_cards_and_plan(db):
         await ex.join_call(L, s["id"], now=SAT - timedelta(minutes=20))
     with pytest.raises(ExchangeRefused, match="not_your_session"):
         await ex.join_call(P2, s["id"], now=SAT)
-    with patch("app.services.calling_service.create_daily_room", new=AsyncMock(return_value="https://x.daily.co/r")) as room:
+    with patch("app.services.calling_service.create_daily_room", new=AsyncMock(return_value="https://x.daily.co/r")) as room,          patch("app.services.calling_service.create_daily_meeting_token",
+               new=AsyncMock(side_effect=lambda room, uid, name, exp, audio_only=False: f"tok-{uid}-{audio_only}")) as tok:
         me = await ex.join_call(L, s["id"], now=SAT - timedelta(minutes=5))
         them = await ex.join_call(P1, s["id"], now=SAT)
-    assert room.await_args.kwargs["properties"] == {"start_video_off": True}
+    props = room.await_args.kwargs["properties"]
+    assert props["start_video_off"] and props["privacy"] == "private"       # the URL alone gets nobody in
     assert room.await_count == 1                                    # made once
+    # Each person gets their own token; the low-data partner's is audio-only.
+    assert me["room_url"] == "https://x.daily.co/r?t=tok-learner-False"
+    assert them["room_url"] == "https://x.daily.co/r?t=tok-p1-True"
+    assert tok.await_count == 2
     assert me["cards"]["amharic"]["prompt"] == "You have prices"
     assert them["cards"]["amharic"]["prompt"] == "You have items"
     assert them["cards"]["amharic"]["prompt_extra"] == "Correct one thing kindly."
@@ -293,6 +299,15 @@ def test_late_cancellations_pause(db):
     assert P1 not in ex.candidates(L, "sat10", SAT, 30, NOW)
     early = _booked(db, partner=P2, at=NOW + timedelta(days=3))
     assert not ex.cancel(L, early["id"], now=NOW)["late"]
+
+
+@pytest.mark.asyncio
+async def test_no_token_no_call(db):
+    """A private room without a token can't be entered: refuse rather than send a dead link."""
+    s = _booked(db)
+    with patch("app.services.calling_service.create_daily_room", new=AsyncMock(return_value="https://x.daily.co/r")),          patch("app.services.calling_service.create_daily_meeting_token", new=AsyncMock(return_value=None)):
+        with pytest.raises(ExchangeRefused, match="no_room"):
+            await ex.join_call(L, s["id"], now=SAT)
 
 
 @pytest.mark.asyncio

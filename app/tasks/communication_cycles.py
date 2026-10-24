@@ -43,6 +43,12 @@ async def run_gift_card_cycle() -> None:
     logger.info("Gift cards: %s", await commerce_service.daily())
 
 
+async def run_sponsorship_cycle() -> None:
+    """§144: release lapsed holds, end sponsored seats after their months, lapse unclaimed named seats."""
+    from app.services import sponsorship_service
+    logger.info("Sponsorship: %s", await sponsorship_service.daily())
+
+
 async def run_unit_assessment_cycle() -> None:
     """§141: open the speaking checks of learners who reached a block without opening the app."""
     from app.services import unit_assessment_service

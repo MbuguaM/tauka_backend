@@ -129,6 +129,49 @@ async def create_daily_room(name: str, expires_at: int, properties: dict | None 
     return None
 
 
+async def create_daily_meeting_token(room_name: str, user_id: str, user_name: str | None, expires_at: int,
+                                     audio_only: bool = False) -> str | None:
+    """A per-person join token for a (private) Daily room, or None. Never raises.
+
+    Exchange sessions (features addendum A7, 2026-10-20): the room is private, so
+    this token is the only way in, and it carries the person's permissions. Video
+    starts off for everyone. `audio_only` (a partner in low-data mode) means they
+    can't send video and don't receive it either, so a call can't use their data
+    on video even if the other person switches a camera on; screen sharing is
+    never allowed. If Daily rejects the receive permission, the token is retried
+    with the send restriction alone, which still keeps their camera off.
+    """
+    if not settings.DAILY_API_KEY:
+        return None
+    headers = {"Authorization": f"Bearer {settings.DAILY_API_KEY}", "Content-Type": "application/json"}
+    base = {"room_name": room_name, "user_id": user_id, "exp": expires_at, "is_owner": False,
+            "start_video_off": True, "enable_screenshare": False}
+    if user_name:
+        base["user_name"] = user_name[:40]
+    if audio_only:
+        # Daily requires every media type in canReceive.base, and the custom
+        # tracks as objects (checked against the API 2026-10-20).
+        no_video = {"video": False, "audio": True, "screenVideo": False, "screenAudio": True,
+                    "customVideo": {"*": False}, "customAudio": {"*": True}}
+        attempts = [{**base, "permissions": {"canSend": ["audio"], "canReceive": {"base": no_video}}},
+                    {**base, "permissions": {"canSend": ["audio"]}}]
+    else:
+        attempts = [{**base, "permissions": {"canSend": ["audio", "video"]}}]
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for props in attempts:
+                res = await client.post("https://api.daily.co/v1/meeting-tokens", headers=headers,
+                                        json={"properties": props})
+                if res.status_code == 200:
+                    return res.json().get("token")
+                log.warning("Daily token for %s: HTTP %s %s", room_name, res.status_code, res.text[:200])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Daily token for %s failed: %s", room_name, exc)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # LiveKit
 # ---------------------------------------------------------------------------

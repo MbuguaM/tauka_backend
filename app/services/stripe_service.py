@@ -229,6 +229,10 @@ async def _handle_checkout_complete(session: dict) -> None:
         # Track 10 (§139): a gift card was paid; email the code. Idempotent.
         from app.services.commerce_service import card_paid
         await card_paid(metadata["gift_card_id"])
+    elif "sponsorship_id" in metadata:
+        # §144: a sponsored seat was paid; grant it or mail the claim link. Idempotent.
+        from app.services.sponsorship_service import paid as sponsorship_paid
+        await sponsorship_paid(metadata["sponsorship_id"])
     elif "addon_purchase_id" in metadata:
         # Plan 2.6 (§129): grant the sessions; idempotent on the purchase row.
         from app.services.addon_service import activate as activate_addon

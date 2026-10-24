@@ -1,6 +1,6 @@
 """Exchange partners — features addendum Feature A, migration §142.
 
-Behind the `exchange_partners` flag. A native Amharic speaker (the PARTNER)
+Behind the `exchange_partners` flag. A fluent Amharic speaker (the PARTNER)
 and a Tauka learner meet for 20 or 30 minutes: hello, an Amharic half on the
 learner's lesson card, a switch, an English half on the partner's card, a
 wrap-up. Audio-only Daily rooms (X-01); never recorded (X-06, L-004).
@@ -871,17 +871,36 @@ def data_estimate_mb(length_min: int, video: bool = False) -> float:
     return round(length_min * (MB_PER_MIN_VIDEO if video else MB_PER_MIN_AUDIO), 1)
 
 
+def _room_end(s: dict) -> datetime:
+    return _ts(s["scheduled_at"]) + timedelta(minutes=int(s["length_min"]) + 30)
+
+
 async def _room(s: dict) -> str | None:
-    """X-01: a Daily room, audio first (video off); video only if both switch it on."""
+    """X-01: a PRIVATE Daily room, audio first (video off). Private means the
+    room URL alone gets nobody in: each person joins with their own token
+    (`_join_url`), which carries what they may do (2026-10-20)."""
     from app.services.calling_service import create_daily_room
     if s.get("room_url"):
         return s["room_url"]
-    end = _ts(s["scheduled_at"]) + timedelta(minutes=int(s["length_min"]) + 30)
-    url = await create_daily_room(f"ex-{s['id'].replace('-', '')}", int(end.timestamp()),
-                                  properties={"start_video_off": True})
+    url = await create_daily_room(f"ex-{s['id'].replace('-', '')}", int(_room_end(s).timestamp()),
+                                  properties={"start_video_off": True, "privacy": "private",
+                                              "enable_screenshare": False})
     if url:
         _t("exchange_session").update({"room_url": url}).eq("id", s["id"]).execute()
     return url
+
+
+async def _join_url(s: dict, url: str, user_id: str, audio_only: bool) -> str | None:
+    """The room URL with this person's own join token (`?t=`). A partner in
+    low-data mode gets an audio-only token: no camera, no incoming video."""
+    from app.services.calling_service import create_daily_meeting_token
+    room_name = url.rstrip("/").rsplit("/", 1)[-1]
+    who = _profiles([user_id]).get(user_id)
+    token = await create_daily_meeting_token(room_name, user_id, _first_name(who), int(_room_end(s).timestamp()),
+                                             audio_only=audio_only)
+    if not token:
+        return None
+    return f"{url}{'&' if '?' in url else '?'}t={token}"
 
 
 async def join_call(user_id: str, session_id: str, now: datetime | None = None) -> dict:
@@ -904,7 +923,11 @@ async def join_call(user_id: str, session_id: str, now: datetime | None = None) 
     english = _card_view(pcard, not is_learner, "partner")
     p = _partner(s["partner_id"]) or {}
     low = bool(p.get("low_data")) and not is_learner
-    return {"room_url": url, "role": "learner" if is_learner else "partner", "length_min": s["length_min"],
+    # Private room: without a token nobody can enter, so no token means no call.
+    joined = await _join_url(s, url, user_id, audio_only=low)
+    if not joined:
+        raise ExchangeRefused("no_room")
+    return {"room_url": joined, "role": "learner" if is_learner else "partner", "length_min": s["length_min"],
             "plan": plan(int(s["length_min"])), "cards": {"amharic": amharic, "english": english},
             "low_data": low, "data_mb": data_estimate_mb(int(s["length_min"])),
             "data_mb_video": data_estimate_mb(int(s["length_min"]), True)}

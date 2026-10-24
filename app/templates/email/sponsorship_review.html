@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by sponsorship_service.review (§144) when ops list or decline an application. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{% if listed %}Sponsors can now read your story{% else %}About your application{% endif %}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Sponsored seats") }}
+{% if listed %}
+{{ ui.heading("You're on the list, " ~ first_name ~ ".") }}
+{{ ui.p("Sponsors can now read your first name, your country, your reason and your story, and choose to fund your seat. Nothing else about you is shown. We'll email you the moment someone does.") }}
+{{ ui.p("Keep learning on the free plan meanwhile: you can withdraw your application any time from the same page.") }}
+{{ ui.button(web_base_url ~ "/sponsorship/apply", "See your application", "amber") }}
+{% else %}
+{{ ui.heading("About your application") }}
+{{ ui.p("Thank you for applying, " ~ first_name ~ ". We can't list this application as it stands.") }}
+{% if reason %}{% call ui.panel() %}{{ reason }}{% endcall %}{% endif %}
+{{ ui.p("You're welcome to apply again. The free plan stays yours either way.") }}
+{{ ui.button(web_base_url ~ "/sponsorship/apply", "Apply again") }}
+{% endif %}
+
+{% endblock %}

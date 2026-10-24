@@ -114,7 +114,7 @@ async def run_daily_tasks(authorization: str | None = Header(default=None)):
     from app.tasks.grace_cycle import run_grace_cycle
     from app.tasks.communication_cycles import (run_benchmark_snapshot, run_dst_cycle, run_gift_card_cycle,
                                                 run_exchange_daily, run_mentoring_cycle, run_peer_cycle,
-                                                run_qa_sample_cycle, run_season_cycle, run_summary_refresh,
+                                                run_qa_sample_cycle, run_season_cycle, run_sponsorship_cycle, run_summary_refresh,
                                                 run_unit_assessment_cycle)
     from app.tasks.phase0_reminder_cycle import run_phase0_reminder_cycle
     from app.tasks.milestone_check import run_milestone_check
@@ -212,6 +212,8 @@ async def run_daily_tasks(authorization: str | None = Header(default=None)):
         ("benchmark_snapshot", run_benchmark_snapshot),
         # Gift cards (Track 10, §139): end access after the months; lapse unredeemed after a year.
         ("gift_card_cycle", run_gift_card_cycle),
+        # Sponsorship (§144): holds released, seats ended after their months, unclaimed lapsed.
+        ("sponsorship_cycle", run_sponsorship_cycle),
         # Last on purpose: it is the only job here that deletes anything, and
         # nothing else depends on it having run. A day late costs storage; a
         # mail job skipped because deletion threw costs a person their email.

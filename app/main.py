@@ -11,7 +11,7 @@ from app.routes import (
     trust, auth, matching, lyric_annotation, public_stats, makeups, waitlist,
     tutor_applications, enrolment, test_outs, hierarchy, clinics, complaints, concerns, pods, handoff_notes, tracker, cover, checkpoints, schedule_changes, slots, fidel,
     groups, addons, mpesa, whatsapp, tutor_ops, peer, dashboard, assessments, commerce, pilots,
-    unit_assessments, exchange, summaries,
+    unit_assessments, exchange, summaries, sponsorship,
 )
 
 
@@ -201,6 +201,9 @@ app.include_router(assessments.public_router, prefix="/public")
 
 # Institutions, community partners, gift cards (Track 10, §139).
 app.include_router(commerce.router, prefix="/commerce")
+
+# Sponsorship: the waitlist, sponsoring a learner or a named person (§144).
+app.include_router(sponsorship.router, prefix="/sponsorship")
 
 # Track 10 pilots and the plan's last remainders (§140).
 app.include_router(pilots.router, prefix="/pilots")

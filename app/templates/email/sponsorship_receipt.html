@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by sponsorship_service.paid (§144) to the sponsor; with ops=True, to ops about a seat paid for a withdrawn request. #}
+{% set footer_audience = "supporter" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ months }} month{{ "s" if months != 1 }} of Tauka {{ tier }} for {{ who }}{% endblock %}
+{% block content %}
+
+{% if ops %}
+{{ ui.eyebrow("Ops") }}
+{{ ui.heading("A sponsorship needs a decision") }}
+{{ ui.p("A sponsor paid for " ~ months ~ " month(s) of " ~ tier ~ ", but the request was withdrawn before payment completed. Refund the sponsor or, with their agreement, redirect the seat.") }}
+{% else %}
+{{ ui.eyebrow("Thank you") }}
+{{ ui.heading("You've sponsored " ~ who ~ ".") }}
+{% if named %}
+{{ ui.p("We've emailed " ~ who ~ " a link to claim " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of the Tauka " ~ tier ~ " plan. If it isn't claimed within a year, write to us and we'll refund you.") }}
+{% else %}
+{{ ui.p(who ~ "'s seat is live: " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of the Tauka " ~ tier ~ " plan, starting today. We've told them.") }}
+{% endif %}
+{% if forward %}{{ ui.p("You were sponsored once. This seat is you paying it forward, and it's how the circle widens.") }}{% endif %}
+{{ ui.p("Changed your mind? A full refund is yours within 7 days: reply to this email.") }}
+{% endif %}
+
+{% endblock %}

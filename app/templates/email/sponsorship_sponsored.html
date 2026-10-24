@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by sponsorship_service.paid (§144) to a waitlisted learner whose seat was just funded. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ months }} month{{ "s" if months != 1 }} of Tauka {{ tier }}, paid for{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("You've been sponsored") }}
+{{ ui.heading(first_name ~ ", your seat is paid for.") }}
+{{ ui.p(sponsor ~ " read your story and funded " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of the Tauka " ~ tier ~ " plan for you. It's on your account now: open the app and keep going.") }}
+{% if message %}{% call ui.panel() %}<i>&ldquo;{{ message }}&rdquo;</i>{% endcall %}{% endif %}
+{{ ui.p("When your months are done, you'll be invited to pick a name off the same list, at whatever level you can afford. That's how the circle grows.") }}
+{{ ui.button(web_base_url ~ "/sponsorship/apply", "See your seat", "amber") }}
+
+{% endblock %}

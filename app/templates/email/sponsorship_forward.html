@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by sponsorship_service.daily (§144) when a sponsored seat ends: the invitation to pay it forward. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}Pick a name off the list you were once on{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Pay it forward") }}
+{{ ui.heading("Your sponsored months are done.") }}
+{{ ui.p("Someone funded " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of Tauka " ~ tier ~ " for you. Everything you learnt stays yours, and the free plan carries on.") }}
+{{ ui.p("If you can, pick a name off the same list you were once on, at whatever level you can afford. Three months is a real gift.") }}
+{{ ui.button(web_base_url ~ "/sponsor", "Read the list", "amber") }}
+
+{% endblock %}
