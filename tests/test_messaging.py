@@ -28,13 +28,13 @@ def test_requires_auth(client):
 def test_send_message_success(client, auth_headers):
     with (
         patch("app.routes.messaging.check_rate_limit", return_value=(True, "OK")),
-        patch("app.routes.messaging.store_message") as mock_store,
+        patch("app.routes.messaging.store_message", return_value={"id": "m1"}) as mock_store,
         patch("app.routes.messaging.log_usage"),
     ):
         resp = _post(client, auth_headers)
 
     assert resp.status_code == 200
-    assert resp.json() == {"status": "sent"}
+    assert resp.json() == {"status": "sent", "message": {"id": "m1"}, "masked": False}
     mock_store.assert_called_once_with("conv-uuid-123", TEST_USER_ID, "Hello there")
 
 
@@ -59,7 +59,7 @@ def test_usage_logged_with_character_count(client, auth_headers):
     content = "Hello there"
     with (
         patch("app.routes.messaging.check_rate_limit", return_value=(True, "OK")),
-        patch("app.routes.messaging.store_message"),
+        patch("app.routes.messaging.store_message", return_value={"id": "m1"}),
         patch("app.routes.messaging.log_usage") as mock_log,
     ):
         _post(client, auth_headers, {"conversation_id": "conv-1", "content": content})
@@ -91,7 +91,7 @@ def test_rate_limit_uses_messaging_provider(client, auth_headers):
 
     with (
         patch("app.routes.messaging.check_rate_limit", side_effect=fake_rate_limit),
-        patch("app.routes.messaging.store_message"),
+        patch("app.routes.messaging.store_message", return_value={"id": "m1"}),
         patch("app.routes.messaging.log_usage"),
     ):
         _post(client, auth_headers)

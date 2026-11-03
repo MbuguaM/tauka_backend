@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # 'paystack', or 'demo' for the local test checkout (local API_BASE_URL only).
     payment_provider: str = "paystack"
     paystack_secret_key: str = ""
+    # Error reporting (API-6). Empty = off.
+    sentry_dsn: str = ""
 
     # ── Stripe ────────────────────────────────────────────────────────────────
     stripe_secret_key: str = ""
@@ -230,6 +232,23 @@ class Settings(BaseSettings):
         environment, so it needs no flag to detect.
         """
         problems: list[str] = []
+        # API-4: a public API_BASE_URL means this is a real deployment.
+        if not self._is_local(self.api_base_url):
+            if (self.payment_provider or "").strip().lower() == "demo":
+                problems.append("PAYMENT_PROVIDER=demo on a public API_BASE_URL. The test checkout "
+                                "refuses to run there, so gift cards and gifted seats can't be bought.")
+            for name, value, why in (
+                ("CRON_SECRET", self.cron_secret, "scheduled jobs can't be authenticated"),
+                ("ENCRYPTION_KEY", self.encryption_key, "payout and M-Pesa details can't be encrypted"),
+                ("DAILY_API_KEY", self.daily_api_key, "pod and exchange rooms can't be created"),
+                ("PAYSTACK_SECRET_KEY", self.paystack_secret_key, "gift cards and gifted seats answer not_configured"),
+            ):
+                if not value:
+                    problems.append(f"{name} is empty: {why}.")
+            if self.email_provider == "resend" and not self.email_api_key:
+                problems.append("EMAIL_PROVIDER=resend with no EMAIL_API_KEY: no email will send.")
+            if self.email_provider == "console":
+                problems.append("EMAIL_PROVIDER=console on a public API_BASE_URL: mail is written to disk, not sent.")
         if not self.mail_leaves_this_machine:
             return problems
 

@@ -83,6 +83,7 @@ Required variables in `.env`:
 | `GEMINI_API_KEY` | Optional | Gemini chat + vision (only if using gemini provider) |
 | `MODEL_NAME` | No | Default DeepSeek model (default: `deepseek-chat`) |
 | `TOKEN_LIMIT` | No | Monthly token cap (default: `100000`) |
+| `SENTRY_DSN` | No | Error reporting (API-6). Empty = off. Request bodies are scrubbed (L-001) |
 | `PAYMENT_PROVIDER` | No | One-off payments (§145): `paystack` (default), or `demo` for the local test checkout, which refuses to run unless `API_BASE_URL` is local |
 | `PAYSTACK_SECRET_KEY` | For gift cards and sponsorship | Paystack API key. It also verifies `POST /payments/paystack/webhook`. Empty = `not_configured` |
 | `STRIPE_SECRET_KEY` | For billing | Stripe API key |
@@ -291,6 +292,10 @@ Separate from `/ai/generate` on purpose — `routes/lyric_annotation.py`,
 Redis key namespace: `rate:{provider}:{user_id}:{minute}` and
 `tokens:{provider}:{user_id}:day|month:{date}`. Per-provider limits are defined in
 `rate_limit_service.py`; each provider is limited independently.
+
+## Checking code against the schema
+
+`uv run python scripts/check_db_columns.py` compares every `.table(...)` column under `app/` with the schema PostgREST reports. It only reads. FakeDB accepts any column, so run this before a deploy. Tables deliberately outside `app` go in `KNOWN_ABSENT`, with the reason.
 
 ## Adding a New Feature
 

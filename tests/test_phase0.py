@@ -117,7 +117,10 @@ def _complete(db, unit_id, when="2026-11-03T10:00:00+00:00"):
 
 
 def test_start_creates_phase0_row_aimed_at_hidar(db):
-    out = phase0_service.start(TEST_USER_ID, COURSE, pace_pledge_hours=10, band="europe")
+    # Frozen, because the start date picks the target intake. The fixture freezes _today only.
+    with patch.object(phase0_service, "datetime", wraps=datetime) as clock:
+        clock.now.return_value = datetime(2026, 10, 18, tzinfo=timezone.utc)
+        out = phase0_service.start(TEST_USER_ID, COURSE, pace_pledge_hours=10, band="europe")
     assert out["enrolled"] and out["state"] == "phase0"
     assert out["pace_pledge_hours"] == 10 and out["band"] == "europe"
     assert out["target_intake"]["ethiopic_month"] == "hidar"

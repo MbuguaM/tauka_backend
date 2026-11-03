@@ -40,7 +40,7 @@ def test_valid_token_extracts_user_id(client, auth_headers):
     """A valid token should pass auth; we check user_id reaches the service."""
     with (
         patch("app.routes.messaging.check_rate_limit", return_value=(True, "OK")),
-        patch("app.routes.messaging.store_message"),
+        patch("app.routes.messaging.store_message", return_value={"id": "m1"}),
         patch("app.routes.messaging.log_usage"),
     ):
         resp = client.post(SEND_URL, json=VALID_BODY, headers=auth_headers)

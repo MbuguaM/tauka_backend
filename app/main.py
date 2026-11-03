@@ -18,6 +18,19 @@ from app.routes import (
 logger = logging.getLogger(__name__)
 
 
+def _scrub(event, _hint):
+    """Message content and request bodies never reach Sentry (L-001)."""
+    request = event.get("request") or {}
+    for key in ("data", "cookies", "query_string"):
+        request.pop(key, None)
+    return event
+
+
+if settings.sentry_dsn:
+    import sentry_sdk
+    sentry_sdk.init(dsn=settings.sentry_dsn, send_default_pii=False, before_send=_scrub, traces_sample_rate=0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Deploy-time misconfigurations that nothing else surfaces: they raise no

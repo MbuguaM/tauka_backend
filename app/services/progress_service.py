@@ -313,10 +313,10 @@ def _activity(student_id: str) -> dict:
         return {"visible": False, "reason": "not shared on this plan",
                 "tier": tier, "summary": None}
 
-    since = (datetime.now(timezone.utc) - timedelta(days=28)).date().isoformat()
+    # One rollup row per learner (seconds_7d, seconds_28d, streaks), not one per day.
     try:
         result = db.schema("app").table("activity_summary").select("*").eq(
-            "user_id", student_id).gte("day", since).order("day", desc=True).execute()
+            "user_id", student_id).execute()
         rows = result.data or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("activity summary read failed for %s: %s", student_id, exc)
