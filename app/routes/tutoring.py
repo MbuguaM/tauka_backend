@@ -13,7 +13,7 @@ and a client-supplied id on either would be an IDOR.
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.dependencies import get_current_user, require_admin, require_tutor
+from app.dependencies import get_current_user, require_admin, require_ops, require_tutor
 from app.models.schemas import (
     BeginHandoffRequest,
     BookSessionRequest,
@@ -61,7 +61,7 @@ async def validate_roster(user_id: str = Depends(get_current_user)):
 
 
 @router.post("/links")
-async def create_link(req: CreateLinkRequest, admin_id: str = Depends(require_admin)):
+async def create_link(req: CreateLinkRequest, admin_id: str = Depends(require_ops)):
     """ADMIN — assign a tutor to a student.
 
     The matcher will call `matching_service.create_link` directly when it exists
@@ -93,7 +93,7 @@ async def evaluate_link(
     student_id: str = Query(...),
     tutor_id: str = Query(...),
     role: str = Query("guest"),
-    admin_id: str = Depends(require_admin),
+    admin_id: str = Depends(require_ops),
 ):
     """ADMIN — would this assignment be allowed, and why?
 
@@ -106,7 +106,7 @@ async def evaluate_link(
 
 
 @router.get("/links/student/{student_id}")
-async def admin_student_links(student_id: str, admin_id: str = Depends(require_admin)):
+async def admin_student_links(student_id: str, admin_id: str = Depends(require_ops)):
     """ADMIN — the full home/guest picture for one student.
 
     D-05's second clause: *"the admin should be able to see whose is the home and
@@ -296,10 +296,28 @@ async def my_handoff(user_id: str = Depends(get_current_user)):
     return handoff_service.status(user_id)
 
 
+@router.get("/handoff/pending")
+async def pending_handoffs(_admin: str = Depends(require_ops)):
+    """ADMIN — every handoff that has begun and has no replacement closed yet."""
+    return {"pending": handoff_service.pending()}
+
+
+@router.get("/links/lookup")
+async def lookup_student(email: str = Query(..., max_length=320), _admin: str = Depends(require_ops)):
+    """ADMIN — find a learner by email for the handoff screen, with their tutors."""
+    from app.services.supabase_client import supabase_admin as db
+    student_id = db.schema("app").rpc("user_id_by_email", {"p_email": email.strip().lower()}).execute().data
+    if not student_id:
+        raise HTTPException(status_code=404, detail="no_such_account")
+    roster = await matching_service.get_roster(student_id)
+    return {"student_id": student_id, "name": handoff_service.student_name(student_id), **roster,
+            "validation": matching_service.validate_link_set(student_id), "handoff": handoff_service.status(student_id)}
+
+
 @router.get("/handoff/candidates/{student_id}")
 async def handoff_candidates(
     student_id: str,
-    _admin: str = Depends(require_admin),
+    _admin: str = Depends(require_ops),
 ):
     """ADMIN — ranked replacements, the student's own guest tutors first.
 
@@ -314,7 +332,7 @@ async def handoff_candidates(
 @router.post("/handoff/begin")
 async def begin_handoff(
     req: BeginHandoffRequest,
-    _admin: str = Depends(require_admin),
+    _admin: str = Depends(require_ops),
 ):
     """ADMIN — `active → handoff_pending`, for one student or a whole tutor.
 
@@ -337,7 +355,7 @@ async def begin_handoff(
 @router.post("/handoff/complete")
 async def complete_handoff(
     req: CompleteHandoffRequest,
-    _admin: str = Depends(require_admin),
+    _admin: str = Depends(require_ops),
 ):
     """ADMIN — `handoff_pending → reassigned`, and a new home link.
 
@@ -358,7 +376,7 @@ async def complete_handoff(
 @router.post("/handoff/cancel")
 async def cancel_handoff(
     req: BeginHandoffRequest,
-    _admin: str = Depends(require_admin),
+    _admin: str = Depends(require_ops),
 ):
     """ADMIN — the tutor came back. `handoff_pending → active`."""
     if not req.student_id:

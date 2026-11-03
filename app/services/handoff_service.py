@@ -132,6 +132,20 @@ def status(student_id: str) -> dict:
     }
 
 
+def student_name(student_id: str) -> str:
+    rows = db.schema("app").table("user_profiles").select("first_name, last_name").eq(
+        "id", student_id).limit(1).execute().data or [{}]
+    return " ".join(p for p in (rows[0].get("first_name"), rows[0].get("last_name")) if p) or "Unnamed"
+
+
+def pending() -> list[dict]:
+    """Who is mid-handoff, oldest first, for the ops screen."""
+    rows = db.schema("app").table("student_tutor_link").select("student_id").eq("role", "home").eq(
+        "state", "handoff_pending").order("updated_at").execute().data or []
+    return [{"student_id": r["student_id"], "name": student_name(r["student_id"]), **status(r["student_id"])}
+            for r in rows]
+
+
 # ── Choosing a replacement ────────────────────────────────────────────────────
 
 def propose_replacement(student_id: str) -> dict:

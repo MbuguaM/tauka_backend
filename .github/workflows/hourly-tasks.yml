@@ -1,0 +1,30 @@
+# Triggers GET /tasks/hourly: pod rooms, exchange requests and session reminders.
+# Vercel's own cron here runs daily, so this one is the hourly clock.
+#
+# Needs the repository secret CRON_SECRET, matching the CRON_SECRET on the API.
+# GitHub can start a scheduled run some minutes late. The reminder windows are an
+# hour wide and each person is reminded once, so a late run costs nothing.
+name: Hourly tasks
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call the API
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          body=$(curl --silent --show-error --fail-with-body --retry 2 --retry-all-errors --max-time 280 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            https://api.tauka.io/tasks/hourly)
+          echo "$body"
+          # The route answers 200 even when a job inside failed, so look.
+          if echo "$body" | grep -q '"failed'; then exit 1; fi

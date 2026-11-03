@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by reminder_service (ALL-11): 24 hours and 1 hour before a session.
+    Email is the channel that reaches Windows, which has no push. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ when }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Session reminder") }}
+{{ ui.heading(subject) }}
+{{ ui.p(when) }}
+{{ ui.p("Open the Tauka app to join. The room opens shortly before the start.") }}
+{{ ui.p("Can't make it? Tell us in the app or reply to support@tauka.io.") }}
+
+{% endblock %}

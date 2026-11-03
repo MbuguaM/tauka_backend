@@ -200,8 +200,7 @@ a feature on — no deploy — and flip the matching key in tauka-react-web's `f
 sessions in the next 24 hours (`cohort_room_service`, 2026-10-20: nothing did before, so pod
 Join could never light up; no URL → no `video_session` row), runs the exchange hourly job
 (lapsed requests passed on, rooms 90 min ahead, unrated sessions settled), then sends the 24 h /
-1 h session reminders (exchanges included) and seat-offer alerts. It needs an external hourly
-scheduler; Vercel's cron here runs daily.
+1 h session reminders (exchanges included) and seat-offer alerts. GitHub Actions triggers it (`.github/workflows/hourly-tasks.yml`, repository secret `CRON_SECRET`); Vercel's cron here runs daily.
 
 ### Features addendum (2026-10-20, §142 / §143)
 

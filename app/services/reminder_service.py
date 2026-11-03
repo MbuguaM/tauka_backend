@@ -6,10 +6,10 @@ daily). For every pod session, make-up, clinic and booked exchange starting
     in [now + 23.5 h, now + 24.5 h)  -> session_24h
     in [now + 30 min, now + 90 min)  -> session_1h
 
-each learner in it and its tutor get one push / WhatsApp reminder in their own
-time zone (`notify_service`, once per person per session per kind). Nothing goes
-out until a channel is switched on (PUSH_ENABLED, or the WhatsApp flag plus an
-opt-in), so this is safe to schedule today.
+each learner in it and its tutor get one reminder in their own time zone
+(`notify_service`, once per person per session per kind). Email always goes (ALL-11);
+push and WhatsApp follow when switched on (PUSH_ENABLED, or the WhatsApp flag plus
+an opt-in).
 """
 
 import logging
@@ -98,7 +98,8 @@ async def hourly(now: datetime | None = None) -> dict:
                 template = "session_reminder_24h" if kind == "session_24h" else "session_reminder_1h"
                 try:
                     sent = await notify(uid, kind, s["id"], title, when, s["link"],
-                                        whatsapp=(template, [s["name"], when]))
+                                        whatsapp=(template, [s["name"], when]),
+                                        email=("session_reminder", {"subject": title, "when": when}))
                     out[kind] += 1 if sent else 0
                 except Exception as exc:  # noqa: BLE001
                     logger.error("reminder %s for %s failed: %s", kind, uid, exc)

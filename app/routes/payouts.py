@@ -11,15 +11,15 @@ The split of authority is the point:
   is what §1.4's loyalty thesis exists to avoid.
 - A **tutor never reads a run.** `payout_run.total_minor` is every tutor's pay
   added together. RLS says so; so does the absence of a route.
-- Only an **admin** computes, approves, or records a disbursement — and approval
-  records *who*, because a machine setting `approved_by` on a payment would be
-  fabricating an approver.
+- Only an **admin with `finance` or `ops`** computes, approves, or records a
+  disbursement — and approval records *who*, because a machine setting
+  `approved_by` on a payment would be fabricating an approver.
 """
 
 import logging
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.dependencies import require_admin, require_tutor
+from app.dependencies import require_finance, require_tutor
 from app.models.schemas import ApproveRunRequest, RecordDisbursementRequest
 from app.services import payout_service
 
@@ -42,11 +42,26 @@ async def my_payouts(user_id: str = Depends(require_tutor)):
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
+@router.get("/runs")
+async def list_runs(admin_id: str = Depends(require_finance)):
+    """ADMIN — recent runs, newest period first."""
+    return {"runs": payout_service.list_runs()}
+
+
+@router.get("/runs/{run_id}")
+async def run_detail(run_id: str, admin_id: str = Depends(require_finance)):
+    """ADMIN — a run and its lines, with who to pay and how. Never the full details."""
+    result = payout_service.run_detail(run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="no_such_run")
+    return result
+
+
 @router.post("/runs/compute")
 async def compute_run(
     period_start: date | None = Query(default=None),
     period_end: date | None = Query(default=None),
-    admin_id: str = Depends(require_admin),
+    admin_id: str = Depends(require_finance),
 ):
     """ADMIN — compute (or recompute) a period's runs, one per currency.
 
@@ -58,7 +73,7 @@ async def compute_run(
 
 
 @router.post("/runs/approve")
-async def approve_run(req: ApproveRunRequest, admin_id: str = Depends(require_admin)):
+async def approve_run(req: ApproveRunRequest, admin_id: str = Depends(require_finance)):
     """ADMIN — sign off a run. **The last step Phase 3a takes.**
 
     Nothing is disbursed by this. It marks the run and its lines as approved so
@@ -73,7 +88,7 @@ async def approve_run(req: ApproveRunRequest, admin_id: str = Depends(require_ad
 @router.post("/lines/disburse")
 async def record_disbursement(
     req: RecordDisbursementRequest,
-    admin_id: str = Depends(require_admin),
+    admin_id: str = Depends(require_finance),
 ):
     """ADMIN — record that a line was paid, by hand.
 
@@ -93,21 +108,23 @@ async def record_disbursement(
         settled_currency=req.settled_currency,
         fx_rate=req.fx_rate,
         fx_source=req.fx_source,
+        actor=admin_id,
     )
     if not result.get("settled"):
-        raise HTTPException(status_code=400, detail=result.get("reason", "could not settle"))
+        raise HTTPException(status_code=409, detail=result.get("reason", "could not settle"))
     return result
 
 
 @router.get("/float")
-async def float_position(admin_id: str = Depends(require_admin)):
+async def float_position(admin_id: str = Depends(require_finance)):
     """ADMIN — the reserve position per currency, and whether it reconciles.
 
     `agrees` false means the fold over the ledger disagrees with the running
     balance stamped on the last row. That is a real problem and never a display
     issue: both are derived from the same append-only table.
     """
-    return await payout_service.check_float_balance()
+    # Opening a page must not send mail: the monthly job does the alerting.
+    return await payout_service.check_float_balance(alert=False)
 
 
 @router.post("/float/append")
@@ -116,7 +133,7 @@ async def append_float(
     direction: str = Query(..., pattern="^(credit|debit)$"),
     amount_minor: int = Query(..., gt=0),
     reason: str = Query(...),
-    admin_id: str = Depends(require_admin),
+    admin_id: str = Depends(require_finance),
 ):
     """ADMIN — record a movement in the reserve.
 

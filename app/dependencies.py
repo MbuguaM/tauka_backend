@@ -167,3 +167,18 @@ async def require_admin(user_id: str = Depends(get_current_user)) -> str:
     if not (result.data or []):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user_id
+
+async def require_finance(user_id: str = Depends(require_admin)) -> str:
+    """Money screens: an admin holding `finance` or `ops` (`owner` implies both)."""
+    from app.services import hierarchy_service as hs
+    if not (hs.admin_can(user_id, "finance") or hs.admin_can(user_id, "ops")):
+        raise HTTPException(status_code=403, detail="Needs the finance or ops capability")
+    return user_id
+
+
+async def require_ops(user_id: str = Depends(require_admin)) -> str:
+    """Moving learners between tutors: an admin holding `ops` (`owner` implies it)."""
+    from app.services import hierarchy_service as hs
+    if not hs.admin_can(user_id, "ops"):
+        raise HTTPException(status_code=403, detail="Needs the ops capability")
+    return user_id

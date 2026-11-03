@@ -13,7 +13,7 @@ Pinned:
 import hashlib
 import hmac
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -102,6 +102,34 @@ async def test_session_reminders():
     assert sorted(sent) == [("a", "session_24h", "cs1"), ("b", "session_1h", "m1"),
                             ("t1", "session_24h", "cs1"), ("t2", "session_1h", "m1")]
     assert out["session_24h"] == 2 and out["session_1h"] == 2
+
+
+# ALL-11: email reaches people with no push, and a failed send is tried again.
+@pytest.mark.asyncio
+async def test_notify_emails_and_retries_a_failure():
+    db = _db(notice_log=[])
+    db.auth = MagicMock()
+    db.auth.admin.get_user_by_id.return_value.user.email = "a@b.co"
+    statuses = ["failed", "sent"]
+    sends = []
+
+    async def fake_send(to, template, data, **k):
+        sends.append((to, template, data["when"]))
+        return {"id": "x", "status": statuses.pop(0)}
+    args = ("u1", "session_1h", "s1", "In an hour", "10:00")
+    with patch("app.services.notify_service.db", db),          patch("app.services.push_service.send", AsyncMock(return_value=False)),          patch("app.services.email_service.send_template_email", fake_send):
+        mail = ("session_reminder", {"subject": "In an hour", "when": "10:00"})
+        assert await notify_service.notify(*args, email=mail) == []
+        assert await notify_service.notify(*args, email=mail) == ["email"]
+        assert await notify_service.notify(*args, email=mail) == []
+    assert sends == [("a@b.co", "session_reminder", "10:00")] * 2
+
+
+def test_the_reminder_template_renders():
+    from app.services.email_service import _jinja_env
+    html = _jinja_env.get_template("session_reminder.html").render(
+        subject="Tomorrow: your pod session", when="Tue 10:00", web_base_url="https://tauka.io")
+    assert "Tue 10:00" in html and "Tomorrow: your pod session" in html
 
 
 # 4

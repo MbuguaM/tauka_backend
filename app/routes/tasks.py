@@ -67,9 +67,9 @@ async def run_hourly_tasks(authorization: str | None = Header(default=None)):
     """Hourly jobs: pod-session rooms (features-addendum plan §3 item 3),
     exchange requests and rooms (addendum A), and session reminders 24 h and
     1 h before (plan 6.1/6.2).
-    Needs an external hourly cron with the same CRON_SECRET (Vercel's own cron
-    here runs daily). Safe to schedule now: nothing is sent until push or
-    WhatsApp is switched on."""
+    Triggered by `.github/workflows/hourly-tasks.yml` with the same CRON_SECRET
+    (Vercel's own cron here runs daily). Reminders go out by email as soon as this
+    is scheduled."""
     _authorise(authorization)
     from app.tasks.communication_cycles import run_cohort_room_cycle, run_exchange_hourly, run_reminder_cycle
     # Rooms first, so a reminder an hour before a pod session can't beat its room.

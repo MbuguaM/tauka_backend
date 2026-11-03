@@ -1,6 +1,6 @@
-"""One way to tell a person something outside email — enrolment plan Track 6.
+"""One way to tell a person something — enrolment plan Track 6.
 
-    notify(user_id, kind, ref, title, body, link=None, whatsapp=None)
+    notify(user_id, kind, ref, title, body, link=None, whatsapp=None, email=None)
 
 fans out to the channels that are switched on for that person:
 
@@ -10,6 +10,8 @@ fans out to the channels that are switched on for that person:
   * WHATSAPP (6.1) — only with the `whatsapp_reminders` flag on AND the person
     opted in (`whatsapp_contact`), as an approved template (`whatsapp` = the
     template name and its parameters).
+  * EMAIL (ALL-11) — when the caller passes `email` = the template name and its
+    data. The only channel on for everyone, and the only one reaching Windows.
 
 `ref` + `kind` make it once-only: the `notice_log` row is claimed first, and
 released if every channel failed so the next run retries. Never raises.
@@ -45,8 +47,20 @@ def already(user_id: str, kind: str, ref: str) -> bool:
         return False
 
 
+async def _send_email(user_id: str, template: str, data: dict) -> bool:
+    from app.config import settings
+    from app.services.email_service import send_template_email
+    address = db.auth.admin.get_user_by_id(user_id).user.email
+    if not address:
+        return False
+    result = await send_template_email(address, template, {"web_base_url": settings.web_base_url, **data},
+                                       tags=["reminder"])
+    return result.get("status") == "sent"
+
+
 async def notify(user_id: str, kind: str, ref: str, title: str, body: str, link: str | None = None,
-                 whatsapp: tuple[str, list[str]] | None = None) -> list[str]:
+                 whatsapp: tuple[str, list[str]] | None = None,
+                 email: tuple[str, dict] | None = None) -> list[str]:
     """Returns the channels that delivered (empty if nothing was switched on)."""
     from app.services import push_service, whatsapp_service
     if not user_id or not _claim(user_id, kind, ref):
@@ -63,6 +77,12 @@ async def notify(user_id: str, kind: str, ref: str, title: str, body: str, link:
                 sent.append("whatsapp")
         except Exception as exc:  # noqa: BLE001
             logger.warning("whatsapp %s failed: %s", kind, exc)
+    if email:
+        try:
+            if await _send_email(user_id, email[0], email[1]):
+                sent.append("email")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("email %s failed: %s", kind, exc)
     try:
         if sent:
             _log().update({"channels": sent}).eq("user_id", user_id).eq("kind", kind).eq("ref", ref).execute()

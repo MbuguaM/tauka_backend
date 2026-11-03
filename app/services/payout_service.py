@@ -875,7 +875,8 @@ async def record_disbursement(line_id: str, external_ref: str,
                               settled_amount_minor: int | None = None,
                               settled_currency: str | None = None,
                               fx_rate: float | None = None,
-                              fx_source: str | None = None) -> dict:
+                              fx_source: str | None = None,
+                              actor: str | None = None) -> dict:
     """Record that a human paid a line. **The manual `PayoutDriver` from §11.4.**
 
     `external_ref` holds an M-Pesa receipt or a bank reference identically, so a
@@ -901,8 +902,10 @@ async def record_disbursement(line_id: str, external_ref: str,
         payload["fx_captured_at"] = now
 
     try:
+        # Only an approved line. This had no status check, so a line in an unapproved
+        # run could be recorded as paid, and a second tap overwrote the first reference.
         result = db.schema("app").table("payout_line").update(payload).eq(
-            "id", line_id).execute()
+            "id", line_id).eq("status", "approved").execute()
     except Exception as exc:  # noqa: BLE001
         if "payout_line_fx_complete" in str(exc):
             return {"settled": False,
@@ -911,7 +914,10 @@ async def record_disbursement(line_id: str, external_ref: str,
 
     row = (result.data or [None])[0]
     if not row:
-        return {"settled": False, "reason": "no_such_line"}
+        found = db.schema("app").table("payout_line").select("status").eq("id", line_id).limit(1).execute()
+        current = (found.data or [None])[0]
+        return {"settled": False, "reason": f"line is {current['status']}" if current else "no_such_line"}
+    logger.info("Payout line %s recorded as paid by %s", line_id, actor)
 
     # Debit the float. The ledger's unique index on
     # (reason, reference_type, reference_id) makes a double-tap a no-op, so this
@@ -932,7 +938,48 @@ async def record_disbursement(line_id: str, external_ref: str,
             # the payment failed.
             logger.error("float debit failed for settled line %s: %s", line_id, exc)
 
+    _advance_run(row["run_id"], now)
     return {"settled": True, "line_id": line_id}
+
+
+def _advance_run(run_id: str, now: str) -> None:
+    """`approved -> disbursing` at the first paid line, `settled` at the last."""
+    lines = db.schema("app").table("payout_line").select("status").eq("run_id", run_id).execute().data or []
+    done = all(l["status"] in ("settled", "cancelled") for l in lines)
+    db.schema("app").table("payout_run").update({
+        "status": "settled" if done else "disbursing", "updated_at": now,
+    }).eq("id", run_id).execute()
+
+
+def list_runs(limit: int = 36) -> list[dict]:
+    return db.schema("app").table("payout_run").select(
+        "id, period_start, period_end, currency, status, total_minor, tutor_count, computed_at, approved_at"
+    ).order("period_start", desc=True).limit(limit).execute().data or []
+
+
+def run_detail(run_id: str) -> dict | None:
+    """A run with its lines. Only `method` and `details_last4` of the pay details:
+    the full details stay encrypted, and a tutor's real details never leave here."""
+    runs = db.schema("app").table("payout_run").select("*").eq("id", run_id).limit(1).execute().data or []
+    if not runs:
+        return None
+    lines = db.schema("app").table("payout_line").select(
+        "id, tutor_id, currency, amount_minor, session_count, referral_share_minor, status, external_ref, "
+        "settled_amount_minor, settled_currency, fx_rate, settled_at, breakdown"
+    ).eq("run_id", run_id).execute().data or []
+    ids = [l["tutor_id"] for l in lines]
+    names, pay = {}, {}
+    if ids:
+        for p in db.schema("app").table("user_profiles").select("id, first_name, last_name").in_("id", ids).execute().data or []:
+            names[p["id"]] = " ".join(x for x in (p.get("first_name"), p.get("last_name")) if x) or "Unnamed"
+        for s in db.schema("app").table("tutor_payout_settings").select(
+                "tutor_id, method, details_last4, verified").in_("tutor_id", ids).execute().data or []:
+            pay[s["tutor_id"]] = s
+    for l in lines:
+        s = pay.get(l["tutor_id"], {})
+        l.update(tutor_name=names.get(l["tutor_id"], "Unnamed"), pay_method=s.get("method"),
+                 pay_last4=s.get("details_last4"), pay_verified=bool(s.get("verified")))
+    return {"run": runs[0], "lines": sorted(lines, key=lambda l: l["tutor_name"])}
 
 
 # ── Reconciliation and the low-balance alert ──────────────────────────────────
@@ -974,7 +1021,7 @@ async def reconcile() -> dict:
     return {"currencies": out}
 
 
-async def check_float_balance() -> dict:
+async def check_float_balance(alert: bool = True) -> dict:
     """Low-balance alert. §4.3: a threshold in `app.config`, mailed to ADMIN_EMAIL.
 
     Thresholds are **per currency** — a single number cannot mean anything across
@@ -999,7 +1046,7 @@ async def check_float_balance() -> dict:
 
     mismatches = [c for c, i in state.get("currencies", {}).items() if not i["agrees"]]
 
-    if (low or mismatches) and settings.admin_email:
+    if alert and (low or mismatches) and settings.admin_email:
         from app.services.email_service import send_template_email
         lines = [f"{x['currency']}: {x['balance_minor']} below {x['threshold_minor']}"
                  for x in low]
