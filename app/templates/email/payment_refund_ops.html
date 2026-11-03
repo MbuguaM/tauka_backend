@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by refund_service.provider_update (§146) to ADMIN_EMAIL when a refund needs a person. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ reference }}{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Ops") }}
+{% if outside %}
+{{ ui.heading("A refund was made outside Tauka.") }}
+{{ ui.p("The provider reports a refund on " ~ reference ~ ", but Tauka hasn't refunded this order, so its code or seat still works. Refund it from Refunds in admin, or check why it was issued.") }}
+{% else %}
+{{ ui.heading("A refund needs you.") }}
+{{ ui.p("The refund on " ~ reference ~ " is now: " ~ state ~ ". Its code or seat stays void. A failed refund can be retried from Refunds in admin. If the provider needs bank details, complete it from the provider's dashboard.") }}
+{% endif %}
+{{ ui.button(web_base_url ~ "/admin/refunds", "Open Refunds", "amber") }}
+
+{% endblock %}

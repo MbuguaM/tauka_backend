@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by refund_service.refund (§146) to a learner whose gift card or sponsored seat was refunded. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}Your account is back on the free plan{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Your plan") }}
+{{ ui.heading("Your gifted months have ended.") }}
+{{ ui.p("The " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of Tauka " ~ tier ~ " given to you were refunded to the person who paid, so they've ended early. Lessons already on your device stay there, and the free plan carries on.") }}
+{{ ui.button(web_base_url ~ "/pricing", "See the plans", "amber") }}
+
+{% endblock %}

@@ -83,6 +83,8 @@ Required variables in `.env`:
 | `GEMINI_API_KEY` | Optional | Gemini chat + vision (only if using gemini provider) |
 | `MODEL_NAME` | No | Default DeepSeek model (default: `deepseek-chat`) |
 | `TOKEN_LIMIT` | No | Monthly token cap (default: `100000`) |
+| `PAYMENT_PROVIDER` | No | One-off payments (§145): `paystack` (default), or `demo` for the local test checkout, which refuses to run unless `API_BASE_URL` is local |
+| `PAYSTACK_SECRET_KEY` | For gift cards and sponsorship | Paystack API key. It also verifies `POST /payments/paystack/webhook`. Empty = `not_configured` |
 | `STRIPE_SECRET_KEY` | For billing | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | For billing | Stripe webhook signature secret |
 | `STRIPE_PRICE_LEARNER_MONTHLY` | For billing | Stripe Price ID for Learner **$32/mo** (must match `pricing.jsx`, authoritative — the old $14 price object must not be reused) |
@@ -440,6 +442,6 @@ If you discover a duplicated table, mismatched column type, missing table, or a 
 
 `sponsorship_service` + `/sponsorship` behind the `sponsorship` flag: the sponsorship waitlist
 (`sponsorship_request`, ops-reviewed, consent `sponsorship_listing`, L-024), seats for a waitlisted
-learner or a named person (`sponsorship`), paid by Stripe (`metadata.sponsorship_id`), granted like
+learner or a named person (`sponsorship`), paid through `payment_service` (§145), granted like
 a gift card, swept daily (`sponsorship_cycle`). `public_list` projects only first name, country,
 reason and story: never widen it without updating L-024.

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
 
+    # ── One-off payments (§145, payment_service): gift cards, sponsored seats ──
+    # 'paystack', or 'demo' for the local test checkout (local API_BASE_URL only).
+    payment_provider: str = "paystack"
+    paystack_secret_key: str = ""
+
     # ── Stripe ────────────────────────────────────────────────────────────────
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""

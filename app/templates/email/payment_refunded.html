@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by refund_service.refund (§146) to whoever paid for a gift card or sponsored seat. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}Your refund is on its way{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Refund") }}
+{{ ui.heading("Your refund is on its way.") }}
+{{ ui.p("We're returning " ~ amount ~ " for " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of Tauka " ~ tier ~ " to the way you paid. It can take up to 10 business days to reach you.") }}
+{{ ui.p("Any code or claim link from this purchase no longer works.") }}
+
+{% endblock %}

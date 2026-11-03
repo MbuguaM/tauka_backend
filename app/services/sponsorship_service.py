@@ -18,7 +18,8 @@ SPONSORING
 GRANTING is the gift card's: the tier now (change_tier 'gifted') and the
 months' lessons (grant_gift_months). daily() releases lapsed holds, ends access
 after the months unless the learner is paying by then (and invites them to pay
-it forward), and lapses named seats unclaimed after 12 months.
+it forward), lapses named seats unclaimed after 12 months, and removes old
+stories and applications (§146, L-024).
 """
 
 import hashlib
@@ -34,9 +35,11 @@ from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 
-HOLD = timedelta(minutes=31)          # the Stripe session lives 30 minutes
+HOLD = timedelta(minutes=31)          # a sponsor's time to pay before the card is listed again
 CLAIM_LIFETIME = timedelta(days=365)
 MONTH = timedelta(days=30)
+STORY_KEEP = timedelta(days=30)       # §146, L-024 (provisional)
+ROW_KEEP = timedelta(days=365)
 REASONS = ("heritage", "partner", "relocating", "faith", "work", "other")
 PUBLIC_FIELDS = "id, first_name, country_code, reason, story, tier_wanted, months_wanted, listed_at"
 
@@ -134,12 +137,47 @@ def mine(student_id: str) -> dict:
     return {"request": req[0] if req else None, "seats": seats, "can_pay_forward": bool(seats)}
 
 
-def withdraw(student_id: str) -> dict:
-    got = (_t("sponsorship_request").update({"status": "withdrawn", "held_until": None})
+def withdraw(student_id: str, now: datetime | None = None) -> dict:
+    """Takes the card down and erases the story at once: the consent is what let us keep it."""
+    now = now or _now()
+    got = (_t("sponsorship_request").update({"status": "withdrawn", "held_until": None, "story": None,
+                                             "story_erased_at": now.isoformat()})
            .eq("student_id", student_id).in_("status", ["pending", "listed"]).execute()).data or []
     if not got:
         raise SponsorshipRefused("no_such_request")
+    _t("consent_record").insert({"subject_id": student_id, "purpose": "sponsorship_listing", "granted": False,
+                                 "policy_version": "sponsorship-v1", "source": "in_app",
+                                 "at": now.isoformat()}).execute()
     return {"status": "withdrawn"}
+
+
+def close_refunded_request(request_id: str, now: datetime | None = None) -> None:
+    """A sponsored seat was refunded: the learner can apply again, with a new story."""
+    now = now or _now()
+    _t("sponsorship_request").update({"status": "withdrawn", "story": None, "story_erased_at": now.isoformat()}) \
+        .eq("id", request_id).eq("status", "sponsored").execute()
+
+
+def _sweep_requests(now: datetime) -> dict:
+    """L-024, provisional until legal review. Story: 30 days after a decline or a
+    sponsorship, so a question or a refund can still be answered. Row: 12 months after a
+    decline or withdrawal, unless a sponsorship still points at it (its record needs it)."""
+    out = {"stories_erased": 0, "requests_deleted": 0}
+    cutoff = (now - STORY_KEEP).isoformat()
+    for status, stamp in (("declined", "reviewed_at"), ("sponsored", "sponsored_at")):
+        rows = (_t("sponsorship_request").select("id").eq("status", status).is_("story_erased_at", "null")
+                .lt(stamp, cutoff).execute()).data or []
+        for r in rows:
+            _t("sponsorship_request").update({"story": None, "story_erased_at": now.isoformat()}).eq("id", r["id"]).execute()
+            out["stories_erased"] += 1
+    old = (_t("sponsorship_request").select("id").in_("status", ["declined", "withdrawn"])
+           .lt("story_erased_at", (now - ROW_KEEP).isoformat()).execute()).data or []
+    for r in old:
+        linked = (_t("sponsorship").select("id").eq("request_id", r["id"]).limit(1).execute()).data or []
+        if not linked:
+            _t("sponsorship_request").delete().eq("id", r["id"]).execute()
+            out["requests_deleted"] += 1
+    return out
 
 
 def public_list(now: datetime | None = None) -> list[dict]:
@@ -204,11 +242,10 @@ async def checkout(mode: str, sponsor_email: str, *, request_id: str | None = No
                    recipient_email: str | None = None, recipient_name: str | None = None, tier: str | None = None,
                    sponsor_name: str | None = None, anonymous: bool = False, message: str | None = None,
                    sponsor_user_id: str | None = None, now: datetime | None = None) -> dict:
-    import asyncio
-    import stripe
+    from app.services import payment_service
     _on()
     now = now or _now()
-    if not settings.stripe_secret_key:
+    if not payment_service.configured():
         raise SponsorshipRefused("not_configured")
     row = {"mode": mode, "sponsor_email": sponsor_email.strip().lower(), "anonymous": bool(anonymous),
            "sponsor_name": (sponsor_name or "").strip()[:60] or None, "message": (message or "").strip()[:300] or None,
@@ -241,22 +278,17 @@ async def checkout(mode: str, sponsor_email: str, *, request_id: str | None = No
         row["forward_of"] = mine_[0]["id"] if mine_ else None
     sp = (_t("sponsorship").insert(row).execute()).data[0]
     try:
-        session = await asyncio.to_thread(lambda: stripe.checkout.Session.create(
-            mode="payment", customer_email=row["sponsor_email"],
-            expires_at=int((now + timedelta(minutes=30)).timestamp()),
-            line_items=[{"price_data": {"currency": "usd", "unit_amount": row["amount_minor"],
-                                        "product_data": {"name": f"Sponsor {who}: {row['months']} month(s) of "
-                                                                 f"Tauka {_plan(row['tier'])}"}},
-                         "quantity": 1}],
-            success_url=f"{settings.web_base_url}/sponsor/thanks", cancel_url=f"{settings.web_base_url}/sponsor",
-            metadata={"sponsorship_id": sp["id"]}))
-    except Exception:
+        pay = await payment_service.checkout(
+            "sp", sp["id"], row["amount_minor"], row["currency"], row["sponsor_email"],
+            f"Sponsor {who}: {row['months']} month(s) of Tauka {_plan(row['tier'])}")
+    except payment_service.PaymentFailed as exc:
         _t("sponsorship").update({"status": "cancelled"}).eq("id", sp["id"]).execute()
         if mode == "waitlist":
             _t("sponsorship_request").update({"held_until": None}).eq("id", request_id).execute()
-        raise
-    _t("sponsorship").update({"stripe_session_id": session.id}).eq("id", sp["id"]).execute()
-    return {"checkout_url": session.url}
+        raise SponsorshipRefused("payment_failed") from exc
+    _t("sponsorship").update({"payment_provider": pay.provider, "payment_reference": pay.reference}) \
+        .eq("id", sp["id"]).execute()
+    return {"checkout_url": pay.url}
 
 
 async def _grant(sp: dict, student_id: str, now: datetime) -> dict:
@@ -328,7 +360,7 @@ async def claim(student_id: str, token: str, now: datetime | None = None) -> dic
 async def daily(now: datetime | None = None) -> dict:
     from app.services.tier_service import change_tier
     now = now or _now()
-    out = {"released": 0, "ended": 0, "lapsed": 0}
+    out = {"released": 0, "ended": 0, "lapsed": 0, **_sweep_requests(now)}
     for r in (_t("sponsorship_request").select("id, held_until").eq("status", "listed")
               .lt("held_until", now.isoformat()).execute()).data or []:
         _t("sponsorship_request").update({"held_until": None}).eq("id", r["id"]).execute()

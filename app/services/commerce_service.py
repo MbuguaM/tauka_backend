@@ -216,28 +216,27 @@ def statement(actor: str, partner_id: str, period_start: date, period_end: date)
 # ── gift cards ──────────────────────────────────────────────────────────────
 
 async def buy_card(tier: str, months: int, purchaser_email: str, message: str | None) -> dict:
-    import asyncio
-    import stripe
+    from app.services import payment_service
     if not is_ready("gift_cards"):
         raise CommerceRefused("not_enabled")
     if tier not in MONTHLY_MINOR or not 1 <= int(months) <= 12:
         raise CommerceRefused("bad_card")
-    if not settings.stripe_secret_key:
+    if not payment_service.configured():
         raise CommerceRefused("not_configured")
     amount = MONTHLY_MINOR[tier] * int(months)
     card = (_t("gift_card").insert({"tier": tier, "months": int(months), "amount_minor": amount, "currency": "USD",
                                     "purchaser_email": purchaser_email.strip().lower(),
                                     "message": (message or "").strip()[:300] or None, "status": "pending"})
             .execute()).data[0]
-    session = await asyncio.to_thread(lambda: stripe.checkout.Session.create(
-        mode="payment", customer_email=purchaser_email,
-        line_items=[{"price_data": {"currency": "usd", "unit_amount": amount,
-                                    "product_data": {"name": f"Tauka gift card: {months} month(s) of {tier.replace('_tier', '').title()}"}},
-                     "quantity": 1}],
-        success_url=f"{settings.web_base_url}/gift-card/thanks", cancel_url=f"{settings.web_base_url}/gift-card",
-        metadata={"gift_card_id": card["id"]}))
-    _t("gift_card").update({"stripe_session_id": session.id}).eq("id", card["id"]).execute()
-    return {"checkout_url": session.url}
+    try:
+        pay = await payment_service.checkout(
+            "gc", card["id"], amount, "USD", purchaser_email.strip().lower(),
+            f"Tauka gift card: {months} month(s) of {tier.replace('_tier', '').title()}")
+    except payment_service.PaymentFailed as exc:
+        raise CommerceRefused("payment_failed") from exc
+    _t("gift_card").update({"payment_provider": pay.provider, "payment_reference": pay.reference}) \
+        .eq("id", card["id"]).execute()
+    return {"checkout_url": pay.url}
 
 
 async def card_paid(card_id: str) -> dict | None:
