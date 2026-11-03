@@ -132,7 +132,7 @@ def mine(student_id: str) -> dict:
              .eq("recipient_id", student_id).in_("status", ["claimed", "expired"])
              .order("claimed_at", desc=True).execute()).data or []
     for s in seats:
-        s["from"] = "An anonymous sponsor" if s.pop("anonymous") or not s.get("sponsor_name") else s["sponsor_name"]
+        s["from"] = "An anonymous giver" if s.pop("anonymous") or not s.get("sponsor_name") else s["sponsor_name"]
         s.pop("sponsor_name", None)
     return {"request": req[0] if req else None, "seats": seats, "can_pay_forward": bool(seats)}
 
@@ -219,7 +219,7 @@ async def review(actor: str, request_id: str, decision: str, reason: str | None 
         raise SponsorshipRefused("no_such_request")
     r = got[0]
     await _mail(_email_of(r["student_id"]), "sponsorship_review", {
-        "subject": "You're on the sponsorship list" if decision == "list" else "About your sponsorship application",
+        "subject": "You're on the gift list" if decision == "list" else "About your application for a gifted seat",
         "listed": decision == "list", "first_name": r["first_name"], "reason": r.get("decline_reason")})
     return r
 
@@ -280,7 +280,7 @@ async def checkout(mode: str, sponsor_email: str, *, request_id: str | None = No
     try:
         pay = await payment_service.checkout(
             "sp", sp["id"], row["amount_minor"], row["currency"], row["sponsor_email"],
-            f"Sponsor {who}: {row['months']} month(s) of Tauka {_plan(row['tier'])}")
+            f"A gift for {who}: {row['months']} month(s) of Tauka {_plan(row['tier'])}")
     except payment_service.PaymentFailed as exc:
         _t("sponsorship").update({"status": "cancelled"}).eq("id", sp["id"]).execute()
         if mode == "waitlist":
@@ -314,7 +314,7 @@ async def paid(sponsorship_id: str, now: datetime | None = None) -> dict | None:
         return None
     sp = got[0]
     plan = {"months": sp["months"], "tier": _plan(sp["tier"])}
-    sponsor = "An anonymous sponsor" if sp["anonymous"] or not sp.get("sponsor_name") else sp["sponsor_name"]
+    sponsor = "An anonymous giver" if sp["anonymous"] or not sp.get("sponsor_name") else sp["sponsor_name"]
     if sp["mode"] == "waitlist":
         req = (_t("sponsorship_request").update({"status": "sponsored", "sponsored_at": now.isoformat(),
                                                  "held_until": None})
@@ -327,19 +327,19 @@ async def paid(sponsorship_id: str, now: datetime | None = None) -> dict | None:
             return sp
         sp = await _grant(sp, req[0]["student_id"], now)
         await _mail(_email_of(req[0]["student_id"]), "sponsorship_sponsored", {
-            "subject": "You've been sponsored", "first_name": req[0]["first_name"], "sponsor": sponsor,
+            "subject": "You've been gifted a seat", "first_name": req[0]["first_name"], "sponsor": sponsor,
             "message": sp.get("message"), **plan})
         who = req[0]["first_name"]
     else:
         token = secrets.token_urlsafe(24)
         _t("sponsorship").update({"claim_token_hash": _hash(token)}).eq("id", sp["id"]).execute()
         await _mail(sp["recipient_email"], "sponsorship_claim", {
-            "subject": f"{sponsor} has sponsored your Amharic", "sponsor": sponsor, "name": sp.get("recipient_name"),
-            "message": sp.get("message"), "claim_url": f"{settings.web_base_url}/sponsorship/claim?token={token}",
+            "subject": f"{sponsor} has gifted you Amharic", "sponsor": sponsor, "name": sp.get("recipient_name"),
+            "message": sp.get("message"), "claim_url": f"{settings.web_base_url}/gift/claim?token={token}",
             **plan})
         who = sp.get("recipient_name") or sp["recipient_email"]
     await _mail(sp["sponsor_email"], "sponsorship_receipt", {
-        "subject": "Thank you for sponsoring a learner", "who": who, "named": sp["mode"] == "named",
+        "subject": "Thank you for your gift", "who": who, "named": sp["mode"] == "named",
         "forward": bool(sp.get("forward_of")), **plan})
     return sp
 
@@ -377,7 +377,7 @@ async def daily(now: datetime | None = None) -> dict:
             _t("sponsorship").update({"status": "expired", "forward_invited_at": now.isoformat()}) \
                 .eq("id", s["id"]).execute()
             await _mail(_email_of(s["recipient_id"]), "sponsorship_forward", {
-                "subject": "Your sponsored seat has ended. Pass it on?", "months": s["months"],
+                "subject": "Your gifted seat has ended. Pass it on?", "months": s["months"],
                 "tier": _plan(s["tier"])})
             out["ended"] += 1
     return out

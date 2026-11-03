@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routes import (
     ai, messaging, calling,
-    subscriptions, test, supporters, gifts, testimonials,
+    subscriptions, test, supporters, testimonials,
     referrals, account, tutor_portal, tasks, tutoring, payouts, commitments,
     trust, auth, matching, lyric_annotation, public_stats, makeups, waitlist,
     tutor_applications, enrolment, test_outs, hierarchy, clinics, complaints, concerns, pods, handoff_notes, tracker, cover, checkpoints, schedule_changes, slots, fidel,
@@ -72,7 +72,6 @@ app.include_router(referrals.router, prefix="/referrals")
 app.include_router(supporters.router, prefix="/supporters")
 
 # Segment E
-app.include_router(gifts.router, prefix="/gifts")
 
 # Segment F
 app.include_router(testimonials.router, prefix="/testimonials")

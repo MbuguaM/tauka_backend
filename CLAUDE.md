@@ -440,7 +440,7 @@ If you discover a duplicated table, mismatched column type, missing table, or a 
 
 ### Sponsorship (2026-10-21, §144)
 
-`sponsorship_service` + `/sponsorship` behind the `sponsorship` flag: the sponsorship waitlist
+Visitors and emails say "gift", never "sponsor" (FC-047); internal names stay. `sponsorship_service` + `/sponsorship` behind the `sponsorship` flag: the sponsorship waitlist
 (`sponsorship_request`, ops-reviewed, consent `sponsorship_listing`, L-024), seats for a waitlisted
 learner or a named person (`sponsorship`), paid through `payment_service` (§145), granted like
 a gift card, swept daily (`sponsorship_cycle`). `public_list` projects only first name, country,

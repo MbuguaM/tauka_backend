@@ -162,7 +162,7 @@ async def test_named_sponsoring(db):
     sid = db.rows["sponsorship"][0]["id"]
     await sp.paid(sid, NOW)
     claim_mail = next(c for c in db.mail.await_args_list if c.args[1] == "sponsorship_claim")
-    assert claim_mail.args[0] == "friend@x.test" and claim_mail.args[2]["sponsor"] == "An anonymous sponsor"
+    assert claim_mail.args[0] == "friend@x.test" and claim_mail.args[2]["sponsor"] == "An anonymous giver"
     token = claim_mail.args[2]["claim_url"].split("token=")[1]
     assert db.rows["sponsorship"][0]["claim_token_hash"] == sp._hash(token) != token
     with pytest.raises(SponsorshipRefused):
@@ -223,6 +223,6 @@ def test_emails_render(name):
     from app.services import email_service
     html = email_service._jinja_env.get_template(f"{name}.html").render(
         subject="s", web_base_url="https://tauka.io", listed=True, first_name="Selam", sponsor="Abeba", months=3,
-        tier="Tutor", message="Go well", claim_url="https://tauka.io/sponsorship/claim?token=t", who="Selam",
+        tier="Tutor", message="Go well", claim_url="https://tauka.io/gift/claim?token=t", who="Selam",
         named=False, forward=True, name="Lulit", reason=None)
     assert "3 month" in html or "Selam" in html

@@ -35,7 +35,7 @@ PAYSTACK_REFUND = "https://api.paystack.co/refund"
 # kind -> (table, where the buyer lands after paying, where they land on cancel)
 KINDS = {
     "gc": ("gift_card", "/gift-card/thanks", "/gift-card"),
-    "sp": ("sponsorship", "/sponsor/thanks", "/sponsor"),
+    "sp": ("sponsorship", "/gift/thanks", "/gift"),
 }
 
 

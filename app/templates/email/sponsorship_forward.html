@@ -7,9 +7,9 @@
 {% block content %}
 
 {{ ui.eyebrow("Pay it forward") }}
-{{ ui.heading("Your sponsored months are done.") }}
-{{ ui.p("Someone funded " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of Tauka " ~ tier ~ " for you. Everything you learnt stays yours, and the free plan carries on.") }}
+{{ ui.heading("Your gifted months are done.") }}
+{{ ui.p("Someone gifted you " ~ months ~ " month" ~ ("s" if months != 1 else "") ~ " of Tauka " ~ tier ~ ". Everything you learnt stays yours, and the free plan carries on.") }}
 {{ ui.p("If you can, pick a name off the same list you were once on, at whatever level you can afford. Three months is a real gift.") }}
-{{ ui.button(web_base_url ~ "/sponsor", "Read the list", "amber") }}
+{{ ui.button(web_base_url ~ "/gift", "Read the list", "amber") }}
 
 {% endblock %}

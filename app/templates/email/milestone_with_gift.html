@@ -29,14 +29,7 @@
 {{ ui.heading("Want to accelerate it?", 26) }}
 {{ ui.p("A gift of Tauka Tutor opens live cohort sessions with expert tutors and AI-guided conversation practice — the two things that move a learner fastest.") }}
 
-<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:24px 0;">
-  <tr>
-    <td style="padding-right:12px;">{{ ui.button(web_base_url ~ "/gift/checkout?supporter_id=" ~ supporter_id ~ "&duration=1", "Gift 1 month — $40", "amber") }}</td>
-  </tr>
-  <tr>
-    <td style="padding-top:10px;">{{ ui.button(web_base_url ~ "/gift/checkout?supporter_id=" ~ supporter_id ~ "&duration=3", "Gift 3 months — $120") }}</td>
-  </tr>
-</table>
+<div style="margin:24px 0;">{{ ui.button(web_base_url ~ "/gift-card", "Give a gift card", "amber") }}</div>
 
 {% endblock %}
 
