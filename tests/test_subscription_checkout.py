@@ -1,44 +1,32 @@
-"""`POST /subscriptions/checkout` — enrolment plan H4 / 2.1.
+"""`POST /subscriptions/checkout`: enrolment plan H4 / 2.1, on billing_service since §151.
 
-Stripe Checkout always creates a NEW subscription, so a learner who already has
-a live one must be sent to the billing portal instead of being billed twice.
+A checkout always starts a NEW subscription, so a learner who already has a live plan must
+be refused rather than billed twice. The rules are pinned in test_billing.py; this pins the route.
 """
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-
-def _db_with_student(row):
-    db = MagicMock()
-    db.schema.return_value.table.return_value.select.return_value.eq.return_value \
-        .limit.return_value.execute.return_value = SimpleNamespace(data=[row] if row else [])
-    db.auth.admin.get_user_by_id.return_value = SimpleNamespace(user=SimpleNamespace(email="a@b.c"))
-    return db
+from app.services.billing_service import BillingRefused
 
 
 def test_a_live_subscriber_is_refused_a_second_subscription(client, auth_headers):
-    db = _db_with_student({"stripe_subscription_id": "sub_1", "subscription_status": "active"})
-    with patch("app.routes.subscriptions.db", db), \
-         patch("app.routes.subscriptions.create_subscription_checkout", AsyncMock()) as create:
+    with patch("app.routes.subscriptions.billing_service.checkout",
+               AsyncMock(side_effect=BillingRefused("already_subscribed"))):
         res = client.post("/subscriptions/checkout", json={"tier": "learner_tier"}, headers=auth_headers)
     assert res.status_code == 409
     assert res.json()["detail"]["reason"] == "already_subscribed"
-    create.assert_not_called()
 
 
 def test_a_free_learner_gets_a_checkout_url(client, auth_headers):
-    db = _db_with_student({"stripe_subscription_id": None, "subscription_status": "none"})
-    with patch("app.routes.subscriptions.db", db), \
-         patch("app.routes.subscriptions.create_subscription_checkout",
-               AsyncMock(return_value={"checkout_url": "https://checkout.stripe.test/x", "session_id": "cs_1"})):
+    with patch("app.routes.subscriptions.billing_service.checkout",
+               AsyncMock(return_value={"checkout_url": "https://pay.test/x"})) as create:
         res = client.post("/subscriptions/checkout", json={"tier": "learner_tier"}, headers=auth_headers)
     assert res.status_code == 200
-    assert res.json() == {"checkout_url": "https://checkout.stripe.test/x"}
+    assert res.json() == {"checkout_url": "https://pay.test/x"}
+    assert create.await_args.args[1:] == ("learner_tier", "card")
 
 
-def test_a_cancelled_subscriber_can_subscribe_again(client, auth_headers):
-    db = _db_with_student({"stripe_subscription_id": "sub_old", "subscription_status": "cancelled"})
-    with patch("app.routes.subscriptions.db", db), \
-         patch("app.routes.subscriptions.create_subscription_checkout",
-               AsyncMock(return_value={"checkout_url": "https://checkout.stripe.test/y", "session_id": "cs_2"})):
+def test_an_unconfigured_server_says_so(client, auth_headers):
+    with patch("app.routes.subscriptions.billing_service.checkout",
+               AsyncMock(side_effect=BillingRefused("not_configured"))):
         res = client.post("/subscriptions/checkout", json={"tier": "learner_tier"}, headers=auth_headers)
-    assert res.status_code == 200
+    assert res.status_code == 503

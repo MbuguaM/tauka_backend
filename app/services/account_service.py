@@ -1,82 +1,22 @@
-import asyncio
+"""The account portal's view of a learner's plan. Monthly plans run through billing_service
+(§151, Paystack). Only tauka-python talks to the payment provider."""
+
 import logging
-import stripe
-from app.config import settings
+
+from app.services import billing_service
+from app.services.billing_service import BillingRefused
 from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
-stripe.api_key = settings.stripe_secret_key
-
-_TIER_PRICES = {
-    "learner_tier": settings.stripe_price_learner_monthly,
-    "tutor_tier": settings.stripe_price_tutor_monthly,
-    "intensive_tier": settings.stripe_price_intensive_monthly,
-}
-
-_PRICE_TO_TIER = {v: k for k, v in _TIER_PRICES.items() if v}
 
 
 async def get_full_subscription(user_id: str) -> dict:
-    """Return merged Supabase + Stripe subscription state for the account portal."""
+    """Plan state for /account/subscription. Never includes provider tokens."""
     profile_result = db.schema("app").table("student").select(
-        "tier, tier_source, subscription_status, stripe_customer_id, "
-        "stripe_subscription_id, current_period_end, active_gift_id, original_tier"
+        "tier, tier_source, subscription_status, current_period_end, active_gift_id"
     ).eq("id", user_id).execute()
 
     profile = profile_result.data[0] if profile_result.data else {}
-    tier = profile.get("tier", "free_tier")
-    tier_source = profile.get("tier_source", "self")
-    stripe_customer_id = profile.get("stripe_customer_id")
-    stripe_subscription_id = profile.get("stripe_subscription_id")
-
-    stripe_data: dict = {}
-    if stripe_customer_id and stripe_subscription_id:
-        try:
-            sub = await asyncio.to_thread(
-                lambda: stripe.Subscription.retrieve(
-                    stripe_subscription_id,
-                    expand=["default_payment_method", "latest_invoice"],
-                )
-            )
-            pm = sub.get("default_payment_method")
-            payment_method = None
-            if pm and isinstance(pm, dict):
-                card = pm.get("card", {})
-                payment_method = {
-                    "brand": card.get("brand"),
-                    "last4": card.get("last4"),
-                    "exp_month": card.get("exp_month"),
-                    "exp_year": card.get("exp_year"),
-                }
-
-            # Upcoming invoice
-            upcoming = None
-            try:
-                inv = await asyncio.to_thread(
-                    lambda: stripe.Invoice.upcoming(customer=stripe_customer_id)
-                )
-                # PY-003: keep Stripe's integer cents; expose a rounded
-                # display value only at serialization.
-                amount_due_cents = int(inv.get("amount_due", 0) or 0)
-                upcoming = {
-                    "amount_cents": amount_due_cents,
-                    "amount": round(amount_due_cents / 100, 2),
-                    "date": inv.get("next_payment_attempt"),
-                }
-            except Exception:
-                pass
-
-            price_id = (sub.get("items", {}).get("data", [{}]) or [{}])[0].get("price", {}).get("id", "")
-            stripe_data = {
-                "plan_name": _PRICE_TO_TIER.get(price_id, tier).capitalize(),
-                "price_monthly_cents": _plan_price_cents(tier),
-                "current_period_end": sub.get("current_period_end"),
-                "cancel_at_period_end": sub.get("cancel_at_period_end", False),
-                "payment_method": payment_method,
-                "upcoming_invoice": upcoming,
-            }
-        except Exception as exc:
-            logger.warning("Stripe subscription fetch failed: %s", exc)
 
     # Active gift details
     gift = None
@@ -86,7 +26,7 @@ async def get_full_subscription(user_id: str) -> dict:
         ).eq("id", profile["active_gift_id"]).execute()
         if gift_result.data:
             g = gift_result.data[0]
-            gifted_by = "angel supporter"
+            gifted_by = "an anonymous giver"
             if not g["anonymous"]:
                 sup = db.schema("app").table("test_supporters").select("supporter_name").eq(
                     "id", g["supporter_id"]
@@ -100,212 +40,56 @@ async def get_full_subscription(user_id: str) -> dict:
             }
 
     return {
-        "tier": tier,
-        "tier_source": tier_source,
+        "tier": profile.get("tier", "free_tier"),
+        "tier_source": profile.get("tier_source", "self"),
         "subscription_status": profile.get("subscription_status", "none"),
-        "stripe": stripe_data or None,
+        "billing": billing_service.summary(user_id),
         "gift": gift,
     }
 
 
-async def change_subscription(user_id: str, new_tier: str, success_url: str | None, cancel_url: str | None) -> dict:
-    """Handle all plan change scenarios."""
-    from app.services.tier_service import change_tier
-    from app.services.stripe_service import create_subscription_checkout
+async def change_subscription(user_id: str, new_tier: str, success_url: str | None = None,
+                              cancel_url: str | None = None, channel: str = "card") -> dict:
+    """Free to paid opens a checkout. Paid to free cancels at period end. Paid to another paid
+    is refused for now: Paystack has no plan swap, so a change would mean two subscriptions."""
+    sub = billing_service.current(user_id)
+    live = bool(sub and sub["status"] in billing_service.LIVE)
 
-    profile_result = db.schema("app").table("student").select(
-        "tier, tier_source, stripe_customer_id, stripe_subscription_id, active_gift_id"
-    ).eq("id", user_id).execute()
+    if new_tier == "free_tier":
+        if live:
+            return await billing_service.cancel(user_id)
+        return {"action": "no_change", "tier": "free_tier"}
+    if live:
+        if sub["tier"] == new_tier:
+            return {"action": "no_change", "tier": new_tier}
+        raise BillingRefused("plan_change_unavailable")
 
-    profile = profile_result.data[0] if profile_result.data else {}
-    current_tier = profile.get("tier", "free_tier")
-    stripe_sub_id = profile.get("stripe_subscription_id")
-    stripe_customer_id = profile.get("stripe_customer_id")
-
-    # Cannot downgrade while active gift is present
-    if profile.get("active_gift_id") and new_tier != "free_tier":
-        from app.services.tier_service import TIER_RANK
-        # Allow changes, they'll apply after gift expires
-        pass
-
-    # Free → Paid: create Checkout Session
-    if current_tier == "free_tier" and new_tier != "free_tier":
-        try:
-            user_result = db.auth.admin.get_user_by_id(user_id)
-            email = user_result.user.email if user_result and user_result.user else ""
-        except Exception:
-            email = ""
-        result = await create_subscription_checkout(
-            student_id=user_id,
-            tier=new_tier,
-            # /account/subscription/success is not a route either — the portal
-            # has only /account/subscription, which shows post-webhook state.
-            success_url=success_url or f"{settings.web_base_url}/account/subscription",
-            cancel_url=cancel_url or f"{settings.web_base_url}/account/subscription",
-            customer_email=email,
-        )
-        return {"action": "checkout", "checkout_url": result["checkout_url"]}
-
-    # Paid → Free: cancel at period end
-    if new_tier == "free_tier" and stripe_sub_id:
-        await asyncio.to_thread(
-            lambda: stripe.Subscription.modify(stripe_sub_id, cancel_at_period_end=True)
-        )
-        db.schema("app").table("student").update({
-            "subscription_status": "cancelled",
-        }).eq("id", user_id).execute()
-        return {"action": "cancelled", "message": "Subscription will cancel at period end"}
-
-    # Paid → Different Paid: update Stripe subscription
-    if stripe_sub_id and new_tier not in ("free_tier", current_tier):
-        price_id = _TIER_PRICES.get(new_tier)
-        if not price_id:
-            raise ValueError(f"Unknown tier: {new_tier}")
-        sub = await asyncio.to_thread(
-            lambda: stripe.Subscription.retrieve(stripe_sub_id)
-        )
-        item_id = sub["items"]["data"][0]["id"]
-        updated = await asyncio.to_thread(
-            lambda: stripe.Subscription.modify(
-                stripe_sub_id,
-                items=[{"id": item_id, "price": price_id}],
-                proration_behavior="always_invoice",
-            )
-        )
-        await change_tier(user_id, new_tier, "self")
-        return {
-            "action": "updated",
-            "new_tier": new_tier,
-            "effective_date": updated.get("current_period_start"),
-        }
-
-    return {"action": "no_change", "tier": current_tier}
+    result = await billing_service.checkout(user_id, new_tier, channel)
+    return {"action": "checkout", "checkout_url": result["checkout_url"]}
 
 
 async def reactivate_subscription(user_id: str) -> dict:
-    """Reactivate a subscription that was cancelled but hasn't ended yet."""
-    profile_result = db.schema("app").table("student").select(
-        "stripe_subscription_id"
-    ).eq("id", user_id).execute()
-
-    if not profile_result.data or not profile_result.data[0].get("stripe_subscription_id"):
-        raise ValueError("No subscription to reactivate")
-
-    sub_id = profile_result.data[0]["stripe_subscription_id"]
-    sub = await asyncio.to_thread(
-        lambda: stripe.Subscription.modify(sub_id, cancel_at_period_end=False)
-    )
-    db.schema("app").table("student").update({
-        "subscription_status": "active",
-    }).eq("id", user_id).execute()
-
-    return {
-        "status": "active",
-        "next_billing": sub.get("current_period_end"),
-    }
+    """Undo a cancellation before the paid month ends."""
+    return await billing_service.reactivate(user_id)
 
 
-async def get_billing_history(
-    user_id: str,
-    limit: int = 10,
-    starting_after: str | None = None,
-) -> list[dict]:
-    """Return Stripe invoice history for the student."""
-    profile_result = db.schema("app").table("student").select(
-        "stripe_customer_id"
-    ).eq("id", user_id).execute()
+async def pay_now(user_id: str) -> dict:
+    return await billing_service.pay_month(user_id)
 
-    if not profile_result.data or not profile_result.data[0].get("stripe_customer_id"):
-        return []
 
-    customer_id = profile_result.data[0]["stripe_customer_id"]
-    params: dict = {"customer": customer_id, "limit": limit}
-    if starting_after:
-        params["starting_after"] = starting_after
-
-    invoices = await asyncio.to_thread(lambda: stripe.Invoice.list(**params))
-
-    return [
-        {
-            "invoice_id": inv.get("id"),
-            "date": inv.get("created"),
-            "amount_cents": int(inv.get("amount_paid") or 0),
-            "amount": round(int(inv.get("amount_paid") or 0) / 100, 2),
-            "currency": inv.get("currency", "usd").upper(),
-            "status": inv.get("status"),
-            "description": inv.get("description") or _invoice_description(inv),
-            "pdf_url": inv.get("invoice_pdf"),
-        }
-        for inv in (invoices.get("data") or [])
-    ]
+async def get_billing_history(user_id: str, limit: int = 10, starting_after: str | None = None) -> list[dict]:
+    """Paid months, newest first. `starting_after` is unused: the page shows the latest few."""
+    return billing_service.history(user_id, limit)
 
 
 async def get_payment_method(user_id: str) -> dict | None:
-    """Return the student's current payment method details."""
-    profile_result = db.schema("app").table("student").select(
-        "stripe_customer_id, stripe_subscription_id"
-    ).eq("id", user_id).execute()
-
-    if not profile_result.data:
+    """How the plan is paid. Paystack holds the card, and we keep no card details."""
+    sub = billing_service.current(user_id)
+    if not sub or sub["status"] not in billing_service.LIVE:
         return None
-
-    profile = profile_result.data[0]
-    if not profile.get("stripe_subscription_id"):
-        return None
-
-    try:
-        sub = await asyncio.to_thread(
-            lambda: stripe.Subscription.retrieve(
-                profile["stripe_subscription_id"],
-                expand=["default_payment_method"],
-            )
-        )
-        pm = sub.get("default_payment_method")
-        if not pm or not isinstance(pm, dict):
-            return None
-        card = pm.get("card", {})
-        return {
-            "brand": card.get("brand"),
-            "last4": card.get("last4"),
-            "exp_month": card.get("exp_month"),
-            "exp_year": card.get("exp_year"),
-        }
-    except Exception as exc:
-        logger.warning("get_payment_method failed: %s", exc)
-        return None
+    return {"channel": sub["channel"]}
 
 
 async def create_billing_portal_session(user_id: str) -> str:
-    """Create a Stripe Billing Portal session for payment method updates."""
-    profile_result = db.schema("app").table("student").select(
-        "stripe_customer_id"
-    ).eq("id", user_id).execute()
-
-    if not profile_result.data or not profile_result.data[0].get("stripe_customer_id"):
-        raise ValueError("No Stripe customer for this user")
-
-    customer_id = profile_result.data[0]["stripe_customer_id"]
-    session = await asyncio.to_thread(
-        lambda: stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=f"{settings.web_base_url}/account/subscription",
-        )
-    )
-    return session.url
-
-
-def _plan_price_cents(tier: str) -> int:
-    """PY-003: monthly plan price in integer cents (never float)."""
-    # STALE PRICES CORRECTED 2026-08-24. These were $14 / $40 / $119 and the
-    # published pricing page (tauka-react-web/src/routes/pricing.jsx) charges
-    # $32 / $75 / $145. Server-side display/proration figures must not disagree
-    # with what the customer is actually billed.
-    prices = {"learner_tier": 3200, "tutor_tier": 7500, "intensive_tier": 14500}
-    return prices.get(tier, 0)
-
-
-def _invoice_description(inv: dict) -> str:
-    lines = inv.get("lines", {}).get("data", [])
-    if lines:
-        return lines[0].get("description", "Tauka subscription")
-    return "Tauka subscription"
+    """Paystack's hosted page for changing a card."""
+    return await billing_service.manage_link(user_id)

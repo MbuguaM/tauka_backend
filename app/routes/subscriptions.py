@@ -1,18 +1,21 @@
-import asyncio
 import logging
-import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
-from app.config import settings
 from app.dependencies import get_current_user
 from app.models.schemas import SubscriptionCheckoutRequest, SubscriptionStatusResponse
-from app.services.stripe_service import create_subscription_checkout, process_webhook_event
+from app.services import billing_service
+from app.services.billing_service import BillingRefused
+from app.services.stripe_service import process_webhook_event
 from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Stripe statuses under which the learner is still being billed or about to be.
-_LIVE_STATUSES = {"active", "trialing", "past_due", "incomplete", "unpaid"}
+_STATUS = {"already_subscribed": 409, "not_configured": 503, "not_enabled": 403, "no_such_plan": 400,
+           "not_ready": 409, "payment_failed": 502}
+
+
+def _refused(exc: BillingRefused) -> HTTPException:
+    return HTTPException(status_code=_STATUS.get(exc.reason, 400), detail={"reason": exc.reason})
 
 
 @router.post("/checkout")
@@ -20,48 +23,18 @@ async def create_checkout(
     req: SubscriptionCheckoutRequest,
     user_id: str = Depends(get_current_user),
 ):
-    """Authenticated student creates a Stripe Checkout for self-pay subscription.
-
-    Refuses a learner who already has a live subscription: Checkout always
-    creates a NEW subscription, so a second purchase would bill them twice.
-    Plan changes for subscribers go through the Stripe billing portal
-    (`POST /account/update-payment-method`). Enrolment plan H4 / 2.1.
-    """
-    existing = (db.schema("app").table("student")
-                .select("stripe_subscription_id, subscription_status")
-                .eq("id", user_id).limit(1).execute().data or [])
-    if existing and existing[0].get("stripe_subscription_id") and             existing[0].get("subscription_status") in _LIVE_STATUSES:
-        raise HTTPException(status_code=409, detail={
-            "reason": "already_subscribed",
-            "message": "You already have a plan. Change it from Manage billing.",
-        })
-
+    """A signed-in learner starts a monthly plan (§151). Refuses a live plan, which would
+    bill them twice. Enrolment plan H4 / 2.1."""
     try:
-        user_result = db.auth.admin.get_user_by_id(user_id)
-        email = user_result.user.email if user_result and user_result.user else ""
-    except Exception:
-        email = ""
-
-    try:
-        result = await create_subscription_checkout(
-            student_id=user_id,
-            tier=req.tier,
-            # Stripe redirects a browser here, so it must be a web route.
-            # /account/subscription renders current state and so reads correctly
-            # after either outcome; /subscription/success has never existed.
-            success_url=req.success_url or f"{settings.web_base_url}/account/subscription",
-            cancel_url=req.cancel_url or f"{settings.web_base_url}/account/subscription",
-            customer_email=email,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Checkout creation failed: {exc}")
-
-    return {"checkout_url": result["checkout_url"]}
+        return await billing_service.checkout(user_id, req.tier, req.channel)
+    except BillingRefused as exc:
+        raise _refused(exc)
 
 
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
-    """Stripe webhook endpoint — no auth, Stripe signs the payload."""
+    """Stripe webhook endpoint, still used by add-ons, commitments and institutions.
+    Paystack's is POST /payments/paystack/webhook."""
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
@@ -125,25 +98,9 @@ async def subscription_status(user_id: str = Depends(get_current_user)):
 
 @router.post("/cancel")
 async def cancel_subscription(user_id: str = Depends(get_current_user)):
-    """Cancel self-pay subscription at period end."""
-    profile_result = db.schema("app").table("student").select(
-        "stripe_subscription_id"
-    ).eq("id", user_id).execute()
-
-    if not profile_result.data or not profile_result.data[0].get("stripe_subscription_id"):
-        raise HTTPException(status_code=400, detail="No active subscription to cancel")
-
-    sub_id = profile_result.data[0]["stripe_subscription_id"]
-
+    """Cancel a monthly plan at period end."""
     try:
-        await asyncio.to_thread(
-            lambda: stripe.Subscription.modify(sub_id, cancel_at_period_end=True)
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Cancellation failed: {exc}")
-
-    db.schema("app").table("student").update({
-        "subscription_status": "cancelled",
-    }).eq("id", user_id).execute()
-
+        await billing_service.cancel(user_id)
+    except BillingRefused as exc:
+        raise _refused(exc)
     return {"status": "will_cancel_at_period_end"}

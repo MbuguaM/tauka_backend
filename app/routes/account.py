@@ -3,14 +3,21 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.dependencies import get_current_user
 from app.models.schemas import ChangeSubscriptionRequest
 from app.services import account_service
+from app.services.billing_service import BillingRefused
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_STATUS = {"already_subscribed": 409, "not_configured": 503, "not_enabled": 403, "no_such_plan": 404,
+           "plan_change_unavailable": 409, "not_ready": 409, "payment_failed": 502}
+
+
+def _refused(exc: BillingRefused) -> HTTPException:
+    return HTTPException(status_code=_STATUS.get(exc.reason, 400), detail={"reason": exc.reason})
 
 
 @router.get("/subscription")
 async def get_subscription(user_id: str = Depends(get_current_user)):
-    """Full subscription state for the account portal — Supabase + Stripe merged."""
+    """Full subscription state for the account portal."""
     try:
         return await account_service.get_full_subscription(user_id)
     except Exception as exc:
@@ -23,11 +30,13 @@ async def change_subscription(
     req: ChangeSubscriptionRequest,
     user_id: str = Depends(get_current_user),
 ):
-    """Change subscription plan (free→paid creates checkout, paid→paid updates immediately)."""
+    """Free to paid opens a checkout, and paid to free cancels at period end."""
     try:
         return await account_service.change_subscription(
-            user_id, req.new_tier, req.success_url, req.cancel_url
+            user_id, req.new_tier, req.success_url, req.cancel_url, req.channel
         )
+    except BillingRefused as exc:
+        raise _refused(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -42,6 +51,8 @@ async def cancel_subscription(user_id: str = Depends(get_current_user)):
             user_id, "free_tier", None, None
         )
         return result
+    except BillingRefused as exc:
+        raise _refused(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -53,10 +64,21 @@ async def reactivate_subscription(user_id: str = Depends(get_current_user)):
     """Reactivate a cancelled subscription before the period ends."""
     try:
         return await account_service.reactivate_subscription(user_id)
+    except BillingRefused as exc:
+        raise _refused(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Reactivation failed: {exc}")
+
+
+@router.post("/subscription/pay-now")
+async def pay_now(user_id: str = Depends(get_current_user)):
+    """Pay this month once: an M-Pesa learner's renewal, or anyone in grace."""
+    try:
+        return await account_service.pay_now(user_id)
+    except BillingRefused as exc:
+        raise _refused(exc)
 
 
 @router.get("/billing-history")
@@ -65,7 +87,7 @@ async def billing_history(
     limit: int = Query(default=10, ge=1, le=100),
     starting_after: str | None = Query(default=None),
 ):
-    """Paginated Stripe invoice history."""
+    """Paid months, newest first."""
     return await account_service.get_billing_history(user_id, limit, starting_after)
 
 
@@ -77,10 +99,12 @@ async def get_payment_method(user_id: str = Depends(get_current_user)):
 
 @router.post("/update-payment-method")
 async def update_payment_method(user_id: str = Depends(get_current_user)):
-    """Create a Stripe Billing Portal session to update the payment method."""
+    """Paystack's hosted page for changing a card."""
     try:
         portal_url = await account_service.create_billing_portal_session(user_id)
         return {"portal_url": portal_url}
+    except BillingRefused as exc:
+        raise _refused(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

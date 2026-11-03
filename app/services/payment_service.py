@@ -1,4 +1,4 @@
-"""One-off payments behind one interface (§145, decision D7: Paystack).
+"""Payments through one provider interface (§145, §151, decision D7: Paystack).
 
 Gift cards and sponsored seats call `checkout()` and never name a provider. A
 payment is settled in exactly one place, `settle()`, whichever provider reports it.
@@ -13,7 +13,7 @@ The reference is `<kind>-<row id>`, so it names the row without any lookup table
 and is the same on every retry. `settle()` checks the amount and currency against
 the row: the row was priced by us, and only it decides what was owed.
 
-Subscriptions are not here yet. They still run on Stripe (API-2, next step).
+Monthly plans share this settlement path (kind "mo"), and their rules are in billing_service.
 """
 
 import hashlib
@@ -31,11 +31,14 @@ logger = logging.getLogger(__name__)
 
 PAYSTACK_INITIALIZE = "https://api.paystack.co/transaction/initialize"
 PAYSTACK_REFUND = "https://api.paystack.co/refund"
+PAYSTACK_API = "https://api.paystack.co"
+SUBSCRIPTION_EVENTS = {"subscription.create", "subscription.not_renew", "subscription.disable", "invoice.payment_failed"}
 
 # kind -> (table, where the buyer lands after paying, where they land on cancel)
 KINDS = {
     "gc": ("gift_card", "/gift-card/thanks", "/gift-card"),
     "sp": ("sponsorship", "/gift/thanks", "/gift"),
+    "mo": ("billing_payment", "/account/subscription", "/account/subscription"),   # a month of a plan (§151)
 }
 
 
@@ -138,6 +141,9 @@ async def settle(reference: str, amount_minor: int, currency: str) -> bool:
     if kind == "gc":
         from app.services.commerce_service import card_paid
         await card_paid(row_id)
+    elif kind == "mo":
+        from app.services.billing_service import settle_month
+        await settle_month(row)
     else:
         from app.services.sponsorship_service import paid
         await paid(row_id)
@@ -163,6 +169,24 @@ async def provider_refund(provider_name: str, reference: str, reason: str) -> No
         raise PaymentFailed(data.get("message") or "Paystack refused the refund.")
 
 
+async def paystack_call(method: str, path: str, body: dict | None = None) -> dict:
+    """One Paystack API call. Returns its `data`; raises PaymentFailed if refused or unreachable."""
+    if not settings.paystack_secret_key:
+        raise PaymentFailed("Paystack is not configured.")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.request(method, f"{PAYSTACK_API}{path}", json=body,
+                                       headers={"Authorization": f"Bearer {settings.paystack_secret_key}"})
+        payload = res.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.error("Paystack %s %s failed: %s", method, path, exc)
+        raise PaymentFailed("Could not reach Paystack.") from exc
+    if res.status_code not in (200, 201) or not payload.get("status"):
+        logger.error("Paystack refused %s %s: %s", method, path, payload.get("message"))
+        raise PaymentFailed(payload.get("message") or "Paystack refused the request.")
+    return payload.get("data") or {}
+
+
 def paystack_signature_ok(payload: bytes, signature: str) -> bool:
     """Paystack signs the raw body: HMAC-SHA512 with the secret key, hex digest."""
     if not settings.paystack_secret_key or not signature:
@@ -178,11 +202,23 @@ async def handle_paystack_event(event: dict) -> bool:
     if name.startswith("refund."):
         from app.services.refund_service import provider_update
         return await provider_update(data.get("transaction_reference") or "", name)
+    if name in SUBSCRIPTION_EVENTS:
+        from app.services.billing_service import handle_event
+        return await handle_event(name, data)
     if name != "charge.success":
         return False
     if data.get("status") != "success":
         return False
-    return await settle(data.get("reference") or "", int(data.get("amount") or 0), data.get("currency") or "")
+    reference = data.get("reference") or ""
+    parts = split_reference(reference)
+    if not parts:
+        # Not a reference we made, so a subscription charge if it's anything.
+        from app.services.billing_service import renewal
+        return await renewal(data)
+    if parts[0] == "mo":
+        from app.services.billing_service import note_customer
+        note_customer(reference, data)
+    return await settle(reference, int(data.get("amount") or 0), data.get("currency") or "")
 
 
 def demo_order(reference: str) -> dict | None:
@@ -196,5 +232,5 @@ def demo_order(reference: str) -> dict | None:
     _, success, cancel = KINDS[parts[0]]
     base = settings.web_base_url.rstrip("/")
     return {"amount_minor": int(row["amount_minor"]), "currency": row["currency"], "status": row["status"],
-            "months": row["months"], "tier": row["tier"], "success_url": f"{base}{success}",
+            "months": row.get("months", 1), "tier": row["tier"], "success_url": f"{base}{success}",
             "cancel_url": f"{base}{cancel}"}

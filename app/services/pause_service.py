@@ -62,6 +62,15 @@ def _ts(v) -> datetime | None:
     return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
 
 
+def _billed(student_id: str, st: dict) -> bool:
+    """Is a monthly plan billing this learner? A gifted seat isn't."""
+    if st.get("stripe_subscription_id"):
+        return True
+    rows = (_t("billing_subscription").select("student_id").eq("student_id", student_id)
+            .in_("status", ["active", "past_due", "cancelling"]).limit(1).execute()).data or []
+    return bool(rows)
+
+
 def current(student_id: str) -> dict | None:
     rows = (_t("enrolment_pause").select("*").eq("student_id", student_id)
             .in_("status", list(OPEN)).limit(1).execute()).data or []
@@ -122,8 +131,8 @@ async def request(student_id: str, now: datetime | None = None) -> dict:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise PauseRefused("already_paused") from exc
         raise
-    if st.get("stripe_subscription_id"):
-        # Stop billing exactly as a cancellation does. If Stripe refuses, undo
+    if _billed(student_id, st):
+        # Stop billing exactly as a cancellation does. If the provider refuses, undo
         # the pause rather than leave one that keeps charging.
         from app.services import account_service
         try:
@@ -144,7 +153,7 @@ async def withdraw(student_id: str) -> dict:
         raise PauseRefused("nothing_to_withdraw")
     st = ((_t("student").select("stripe_subscription_id").eq("id", student_id).limit(1)
            .execute()).data or [{}])[0]
-    if st.get("stripe_subscription_id"):
+    if _billed(student_id, st):
         from app.services import account_service
         await account_service.reactivate_subscription(student_id)
     _t("enrolment_pause").update({"status": "withdrawn"}).eq("id", p["id"]).eq("status", "scheduled").execute()

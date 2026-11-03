@@ -85,7 +85,8 @@ Required variables in `.env`:
 | `TOKEN_LIMIT` | No | Monthly token cap (default: `100000`) |
 | `SENTRY_DSN` | No | Error reporting (API-6). Empty = off. Request bodies are scrubbed (L-001) |
 | `PAYMENT_PROVIDER` | No | One-off payments (§145): `paystack` (default), or `demo` for the local test checkout, which refuses to run unless `API_BASE_URL` is local |
-| `PAYSTACK_SECRET_KEY` | For gift cards and sponsorship | Paystack API key. It also verifies `POST /payments/paystack/webhook`. Empty = `not_configured` |
+| `PAYSTACK_PLAN_LEARNER` / `_TUTOR` / `_INTENSIVE` | For monthly plans | Plan codes from the Paystack dashboard (§151). Empty = that plan answers `not_configured` |
+| `PAYSTACK_SECRET_KEY` | For plans, gift cards and gifted seats | Paystack API key. It also verifies `POST /payments/paystack/webhook`. Empty = `not_configured` |
 | `STRIPE_SECRET_KEY` | For billing | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | For billing | Stripe webhook signature secret |
 | `STRIPE_PRICE_LEARNER_MONTHLY` | For billing | Stripe Price ID for Learner **$32/mo** (must match `pricing.jsx`, authoritative — the old $14 price object must not be reused) |
@@ -292,6 +293,10 @@ Separate from `/ai/generate` on purpose — `routes/lyric_annotation.py`,
 Redis key namespace: `rate:{provider}:{user_id}:{minute}` and
 `tokens:{provider}:{user_id}:day|month:{date}`. Per-provider limits are defined in
 `rate_limit_service.py`; each provider is limited independently.
+
+### Monthly plans (2026-11-03, §151)
+
+`billing_service` owns monthly plans through Paystack: card subscriptions, M-Pesa by monthly prompt, cancel, reactivate, grace. `account_service` is a thin view over it. Nothing there calls Stripe. `billing_subscription.email_token` can cancel a subscription, so never return it from a route or add a client policy.
 
 ## Checking code against the schema
 

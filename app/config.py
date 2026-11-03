@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # 'paystack', or 'demo' for the local test checkout (local API_BASE_URL only).
     payment_provider: str = "paystack"
     paystack_secret_key: str = ""
+    # Monthly plans (§151): plan codes from the Paystack dashboard, one per tier.
+    paystack_plan_learner: str = ""
+    paystack_plan_tutor: str = ""
+    paystack_plan_intensive: str = ""
     # Error reporting (API-6). Empty = off.
     sentry_dsn: str = ""
 
@@ -241,7 +245,10 @@ class Settings(BaseSettings):
                 ("CRON_SECRET", self.cron_secret, "scheduled jobs can't be authenticated"),
                 ("ENCRYPTION_KEY", self.encryption_key, "payout and M-Pesa details can't be encrypted"),
                 ("DAILY_API_KEY", self.daily_api_key, "pod and exchange rooms can't be created"),
-                ("PAYSTACK_SECRET_KEY", self.paystack_secret_key, "gift cards and gifted seats answer not_configured"),
+                ("PAYSTACK_SECRET_KEY", self.paystack_secret_key, "plans, gift cards and gifted seats answer not_configured"),
+                ("PAYSTACK_PLAN_LEARNER", self.paystack_plan_learner, "the Learner plan answers not_configured"),
+                ("PAYSTACK_PLAN_TUTOR", self.paystack_plan_tutor, "the Tutor plan answers not_configured"),
+                ("PAYSTACK_PLAN_INTENSIVE", self.paystack_plan_intensive, "the Intensive plan answers not_configured"),
             ):
                 if not value:
                     problems.append(f"{name} is empty: {why}.")

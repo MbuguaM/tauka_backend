@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by billing_service.daily (§151) to an M-Pesa learner before their paid month ends. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ amount }} by {{ due }} keeps your plan going{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Your plan") }}
+{{ ui.heading("Your next month is due.") }}
+{{ ui.p("M-Pesa doesn't renew by itself, so your next month of Tauka " ~ tier ~ " needs paying by " ~ due ~ ": " ~ amount ~ ". Your phone will ask you to approve it.") }}
+{{ ui.button(web_base_url ~ "/account/subscription", "Pay this month", "amber") }}
+
+{% endblock %}

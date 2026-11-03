@@ -66,6 +66,7 @@ class SubscriptionCheckoutRequest(BaseModel):
     tier: Literal["learner_tier", "tutor_tier", "intensive_tier"]
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
+    channel: Literal["card", "mpesa"] = "card"
 
 
 class SubscriptionStatusResponse(BaseModel):
@@ -221,6 +222,7 @@ class ChangeSubscriptionRequest(BaseModel):
     new_tier: Literal["free_tier", "learner_tier", "tutor_tier", "intensive_tier"]
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
+    channel: Literal["card", "mpesa"] = "card"
 
 
 # ── Tutor Portal ───────────────────────────────────────────────────────────────

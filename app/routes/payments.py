@@ -7,7 +7,9 @@ Demo:     GET  /payments/demo/{reference}   a local page standing in for checkou
 Ops:      GET  /payments/admin/orders       paid and refunded one-offs (finance or ops)
           POST /payments/admin/refund       {reference, reason, revoke_access?}
 
-Both demo routes answer 404 unless PAYMENT_PROVIDER=demo on a local API_BASE_URL.
+          POST /payments/demo/plan/{student_id}/{event}   "renew" or "fail", standing in for Paystack
+
+All demo routes answer 404 unless PAYMENT_PROVIDER=demo on a local API_BASE_URL.
 """
 
 import html
@@ -20,7 +22,8 @@ from pydantic import BaseModel, Field
 
 from app.dependencies import require_admin
 from app.services import payment_service as svc
-from app.services import refund_service
+from app.services import billing_service, refund_service
+from app.services.billing_service import BillingRefused
 from app.services.refund_service import RefundRefused
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,16 @@ async def paystack_webhook(request: Request):
         logger.exception("Paystack webhook failed: %s", exc)
         raise HTTPException(status_code=500, detail="Webhook processing failed")
     return {"received": True}
+
+
+@router.post("/demo/plan/{student_id}/{event}")
+async def demo_plan_event(student_id: str, event: str):
+    if svc.provider() != "demo" or not svc.configured():
+        raise HTTPException(status_code=404)
+    try:
+        return await billing_service.demo_event(student_id, event)
+    except BillingRefused as exc:
+        raise HTTPException(status_code=400, detail={"reason": exc.reason})
 
 
 @router.get("/demo/{reference}", response_class=HTMLResponse)

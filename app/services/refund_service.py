@@ -74,8 +74,8 @@ def orders(actor: str, limit: int = 200) -> list[dict]:
     """Every paid or refunded one-off, newest first. Unpaid checkouts aren't orders."""
     _allowed(actor)
     out = []
-    for kind, (table, _, _) in ps.KINDS.items():
-        used, _who, when, payer = USE[kind]
+    for kind, (used, _who, when, payer) in USE.items():
+        table = ps.KINDS[kind][0]
         rows = (_t(table).select(f"{_ORDER_FIELDS}, {when}, {payer}")
                 .in_("status", ["paid", used, "refunded", "expired"]).order("created_at", desc=True).limit(limit)
                 .execute()).data or []
@@ -123,6 +123,8 @@ async def refund(actor: str, reference: str, reason: str, revoke_access: bool = 
     if not row:
         raise RefundRefused("no_such_order")
     kind, row_id = parts
+    if kind not in USE:
+        raise RefundRefused("not_refundable")     # a monthly payment: refund it in Paystack
     table = ps.KINDS[kind][0]
     used, _who, when, payer = USE[kind]
     status = row["status"]
