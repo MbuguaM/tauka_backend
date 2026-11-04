@@ -143,6 +143,7 @@ async def _refund_tokens(actor: str, row: dict, reference: str, reason: str, rev
             ai_token_service.adjust(row["student_id"], removed, "return")
         raise RefundRefused("payment_failed") from exc
 
+    ai_token_service.remove_payment(row)
     state = "requested"
     if row["payment_provider"] == "demo":
         state = "processed"

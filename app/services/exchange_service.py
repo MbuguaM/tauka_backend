@@ -879,10 +879,10 @@ async def _room(s: dict) -> str | None:
     """X-01: a PRIVATE Daily room, audio first (video off). Private means the
     room URL alone gets nobody in: each person joins with their own token
     (`_join_url`), which carries what they may do (2026-10-20)."""
-    from app.services.calling_service import create_daily_room
+    from app.services.calling_service import create_room
     if s.get("room_url"):
         return s["room_url"]
-    url = await create_daily_room(f"ex-{s['id'].replace('-', '')}", int(_room_end(s).timestamp()),
+    url = await create_room(f"ex-{s['id'].replace('-', '')}", int(_room_end(s).timestamp()),
                                   properties={"start_video_off": True, "privacy": "private",
                                               "enable_screenshare": False})
     if url:
@@ -924,10 +924,18 @@ async def join_call(user_id: str, session_id: str, now: datetime | None = None) 
     p = _partner(s["partner_id"]) or {}
     low = bool(p.get("low_data")) and not is_learner
     # Private room: without a token nobody can enter, so no token means no call.
-    joined = await _join_url(s, url, user_id, audio_only=low)
+    from app.services.calling_service import is_livekit_room, livekit_access
+    livekit = None
+    if is_livekit_room(url):
+        who = _profiles([user_id]).get(user_id)
+        livekit = livekit_access(url, user_id, _first_name(who), int(_room_end(s).timestamp()),
+                                 audio_only=low, start_video_off=True)
+        joined = url if livekit else None
+    else:
+        joined = await _join_url(s, url, user_id, audio_only=low)
     if not joined:
         raise ExchangeRefused("no_room")
-    return {"room_url": joined, "role": "learner" if is_learner else "partner", "length_min": s["length_min"],
+    return {"room_url": joined, "livekit": livekit, "role": "learner" if is_learner else "partner", "length_min": s["length_min"],
             "plan": plan(int(s["length_min"])), "cards": {"amharic": amharic, "english": english},
             "low_data": low, "data_mb": data_estimate_mb(int(s["length_min"])),
             "data_mb_video": data_estimate_mb(int(s["length_min"]), True)}

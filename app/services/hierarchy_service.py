@@ -23,7 +23,7 @@ from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 
-CAPABILITIES = ("owner", "ops", "safeguarding", "content", "finance")
+CAPABILITIES = ("owner", "ops", "safeguarding", "content", "finance", "head_of_tutors")
 RUNGS = {1: "Phase 0 reviewer", 2: "Session tutor", 3: "Pod tutor", 4: "Senior / anchor"}
 
 # Substring of the SQL error → the word the API returns.

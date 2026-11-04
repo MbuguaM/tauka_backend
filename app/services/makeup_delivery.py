@@ -82,7 +82,7 @@ async def provision_room(session_id: str) -> str | None:
         return s.get("video_session_id")
     start = _ts(s["scheduled_at"])
     end = start + timedelta(minutes=int(s["duration_minutes"]))
-    url = await calling_service.create_daily_room(
+    url = await calling_service.create_room(
         f"mu-{session_id.replace('-', '')}", int((end + timedelta(hours=1)).timestamp()))
     try:
         # app.video_session (tauka-flutter, video domain): tutor_id, title,

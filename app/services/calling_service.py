@@ -7,6 +7,13 @@ Vendor selection order:
   1. Caller-supplied vendor override (from CallRequest.vendor)
   2. Active row in app.video_vendor_config (Supabase)
   3. Falls back to "daily" if neither is available
+
+HOW A ROOM IS STORED
+  A session's room is one text column, whichever provider made it. Daily has a page address.
+  LiveKit has no page and no room to create in advance: a room exists once someone joins with
+  a token for its name. So a LiveKit room is stored as `livekit://<name>`, and the token, which
+  is the only way in, comes from a route that checks who is asking. A session keeps the provider
+  it was made with, so switching providers leaves existing Daily rooms working.
 """
 
 import time
@@ -38,6 +45,29 @@ def get_active_vendor() -> str:
     except Exception:
         pass
     return "daily"
+
+
+LIVEKIT_SCHEME = "livekit://"
+
+
+def livekit_configured() -> bool:
+    return bool(settings.LIVEKIT_URL and settings.LIVEKIT_API_KEY and settings.LIVEKIT_SECRET)
+
+
+def is_livekit_room(url: str | None) -> bool:
+    return bool(url) and url.startswith(LIVEKIT_SCHEME)
+
+
+def can_make_rooms() -> bool:
+    """Is the active provider's key set?"""
+    return livekit_configured() if get_active_vendor() == "livekit" else bool(settings.DAILY_API_KEY)
+
+
+async def create_room(name: str, expires_at: int, properties: dict | None = None) -> str | None:
+    """The room for a scheduled session, from the active provider, or None. Never raises."""
+    if get_active_vendor() == "livekit":
+        return f"{LIVEKIT_SCHEME}{name}" if livekit_configured() else None
+    return await create_daily_room(name, expires_at, properties=properties)
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +206,13 @@ async def create_daily_meeting_token(room_name: str, user_id: str, user_name: st
 # LiveKit
 # ---------------------------------------------------------------------------
 
-def generate_livekit_token(user_id: str, room: str) -> dict:
+def generate_livekit_token(user_id: str, room: str, name: str | None = None, expires_at: int | None = None,
+                           audio_only: bool = False) -> dict:
     """
-    Generates a signed LiveKit access token with full publish/subscribe grants.
+    Generates a signed LiveKit access token for one person in one room. Screen sharing and data
+    messages aren't granted. `audio_only` (a partner in low-data mode) can't send video.
 
-    Returns dict with keys: token, room_url (None for LiveKit), vendor
+    Returns dict with keys: token, room_url (the signalling address), vendor
     """
     # Fail loudly on a missing secret. `jwt.encode(payload, "")` does NOT raise —
     # it signs with an empty key and returns a perfectly well-formed token that
@@ -200,14 +232,18 @@ def generate_livekit_token(user_id: str, room: str) -> dict:
         "jti": str(uuid.uuid4()),
         "iat": now,
         "nbf": 0,
-        "exp": now + 3600,
+        "exp": expires_at or now + 3600,
         "video": {
             "roomJoin": True,
             "room": room,
             "canPublish": True,
+            "canPublishSources": ["microphone"] if audio_only else ["microphone", "camera"],
+            "canPublishData": False,
             "canSubscribe": True,
         },
     }
+    if name:
+        payload["name"] = name[:40]
     token = jwt.encode(payload, settings.LIVEKIT_SECRET, algorithm="HS256")
 
     # `room_url` was None, which made the token useless on its own: a LiveKit
@@ -218,6 +254,17 @@ def generate_livekit_token(user_id: str, room: str) -> dict:
         "room_url": settings.LIVEKIT_URL or None,
         "vendor": "livekit",
     }
+
+
+def livekit_access(url: str, user_id: str, name: str | None, expires_at: int, audio_only: bool = False,
+                   start_video_off: bool = False) -> dict | None:
+    """What a client needs to join a `livekit://` room, or None if LiveKit isn't configured."""
+    if not livekit_configured():
+        return None
+    room = url[len(LIVEKIT_SCHEME):]
+    token = generate_livekit_token(user_id, room, name, expires_at, audio_only)
+    return {"server_url": token["room_url"], "token": token["token"], "room": room,
+            "start_video_off": start_video_off or audio_only, "audio_only": audio_only}
 
 
 # ---------------------------------------------------------------------------

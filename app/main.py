@@ -8,7 +8,7 @@ from app.routes import (
     ai, messaging, calling,
     subscriptions, test, supporters, testimonials,
     referrals, account, tutor_portal, tasks, tutoring, payouts, commitments,
-    trust, auth, matching, lyric_annotation, public_stats, makeups, waitlist,
+    trust, auth, matching, lyric_annotation, public_stats, makeups, waitlist, downloads,
     tutor_applications, enrolment, test_outs, hierarchy, clinics, complaints, concerns, pods, handoff_notes, tracker, cover, checkpoints, schedule_changes, slots, fidel,
     groups, addons, mpesa, whatsapp, tutor_ops, peer, dashboard, assessments, commerce, pilots,
     unit_assessments, exchange, summaries, sponsorship, payments,
@@ -71,6 +71,7 @@ app.include_router(ai.router, prefix="/ai")
 app.include_router(lyric_annotation.router, prefix="/ai")
 app.include_router(messaging.router, prefix="/messages")
 app.include_router(calling.router, prefix="/calls")
+app.include_router(downloads.router, prefix="/downloads")
 
 # Segment A
 app.include_router(subscriptions.router, prefix="/subscriptions")

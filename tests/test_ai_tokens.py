@@ -147,6 +147,24 @@ async def test_settle_grants_once(db):
 
 
 @pytest.mark.asyncio
+async def test_a_paid_pack_counts_once_toward_commission(db):
+    await ps.settle(f"tk-{ORDER}", 300, "USD")
+    await ps.settle(f"tk-{ORDER}", 300, "USD")
+    rows = db.rows["student_payment"]
+    assert len(rows) == 1
+    assert (rows[0]["source"], rows[0]["amount_minor"], rows[0]["currency"]) == ("ai_tokens", 300, "USD")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_payment_record_still_grants_the_tokens(db):
+    # paid() grants through the database function, and _t is only used for the payment record.
+    with patch.object(svc, "_t", side_effect=RuntimeError("down")):
+        await svc.paid(ORDER)
+    assert _total(db) == 100_000
+    assert not db.rows.get("student_payment")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("amount,currency", [(100, "USD"), (300, "KES")])
 async def test_wrong_payment_grants_nothing(db, amount, currency):
     assert await ps.settle(f"tk-{ORDER}", amount, currency) is False
@@ -234,6 +252,15 @@ async def test_unused_pack_refunds_and_removes_tokens(db, can_refund):
     assert res["status"] == "refunded"
     money.assert_awaited_once()
     assert _total(db) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_refunded_pack_earns_no_commission(db, can_refund):
+    _paid(db, days_ago=60)
+    db.rows["student_payment"] = [{"student_id": USER, "source": "ai_tokens", "external_ref": f"tk-{ORDER}", "amount_minor": 300}]
+    with patch.object(ps, "provider_refund", new_callable=AsyncMock):
+        await rf.refund("admin", f"tk-{ORDER}", "asked")
+    assert db.rows["student_payment"] == []
 
 
 @pytest.mark.asyncio

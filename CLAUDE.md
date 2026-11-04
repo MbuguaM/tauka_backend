@@ -78,13 +78,15 @@ Required variables in `.env`:
 | `SUPABASE_JWT_SECRET` | Yes | Verifying Supabase-issued JWTs |
 | `REDIS_URL` | No | Redis (default: `redis://localhost:6379`) |
 | `DAILY_API_KEY` | For calls | Daily.co room/token creation |
-| `LIVEKIT_API_KEY` / `LIVEKIT_SECRET` | For calls | LiveKit JWT signing |
+| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | For LiveKit calls | Signalling address (`wss://...`) and JWT signing. All three, or LiveKit rooms aren't made |
 | `OPENAI_API_KEY` | Optional | OpenAI chat + vision (only if using openai provider) |
 | `GEMINI_API_KEY` | Optional | Gemini chat + vision (only if using gemini provider) |
 | `MODEL_NAME` | No | Default DeepSeek model (default: `deepseek-chat`) |
 | `TOKEN_LIMIT` | No | Monthly token cap (default: `100000`) |
 | `SENTRY_DSN` | No | Error reporting (API-6). Empty = off. Request bodies are scrubbed (L-001) |
 | `PAYMENT_PROVIDER` | No | One-off payments (§145): `paystack` (default), which refuses to run on a local `API_BASE_URL`, or `demo` for the local test checkout, which refuses to run anywhere else. Paystack test keys belong in a deployed preview, see `DEMO.md` |
+| `DOWNLOAD_PATH_WINDOWS` / `_MACOS` / `_ANDROID` | For downloads | Installer object names in the private `downloads` bucket (§155). Empty = that platform shows as coming soon |
+| `DOWNLOAD_TOKEN_SECRET` | For app updates | Signs the update feed address given to a signed-in desktop app. Empty = no update checks |
 | `PAYSTACK_PLAN_LEARNER` / `_TUTOR` / `_INTENSIVE` | For monthly plans | Plan codes from the Paystack dashboard (§151). Empty = that plan answers `not_configured` |
 | `PAYSTACK_SECRET_KEY` | For plans, gift cards and gifted seats | Paystack API key. It also verifies `POST /payments/paystack/webhook`. Empty = `not_configured` |
 | `STRIPE_SECRET_KEY` | For billing | Stripe API key |
@@ -249,7 +251,7 @@ in `app/models/schemas.py`. Note `deepseek` has no `image_translation` support.
 ## Calling Service (`POST /calls/token`)
 
 Vendor selection order: request override → `app.video_vendor_config` active row → `"daily"`.
-`room_url` is null for LiveKit.
+A LiveKit room has no page: it's stored as `livekit://<name>` in the same column as a Daily address, and each person joins with their own token from `POST /calls/sessions/{id}/join` (`session_join_service`, which checks they're in the session and it's near its time), or from the exchange and peer join routes. Scheduled sessions call `calling_service.create_room`, never a provider directly. A session keeps the provider it was made with.
 
 The active vendor lives in `app.video_vendor_config`, which enforces a **single active
 row via a partial unique index** — so the vendor can be switched server-side with no

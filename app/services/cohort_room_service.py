@@ -12,7 +12,7 @@ video_call_url — CONFLICT-055's columns) and a participant row per active
 member, then point the pod session at it. Same shape as make-ups
 (`makeup_delivery.provision_room`), with one difference: **no room, no row.**
 A video session without a URL would enable Join and send everyone to an error
-page, so when Daily isn't configured this does nothing and says so once a run.
+page, so when the active provider isn't configured this does nothing and says so once a run.
 """
 
 import logging
@@ -41,7 +41,7 @@ async def provision(session: dict, cohort: dict) -> str | None:
         return None
     start = _ts(session["scheduled_at"])
     minutes = int(session.get("duration_minutes") or 50)
-    url = await calling_service.create_daily_room(
+    url = await calling_service.create_room(
         f"pod-{session['id'].replace('-', '')}", int((start + timedelta(minutes=minutes + 60)).timestamp()))
     if not url:
         return None
@@ -61,7 +61,7 @@ async def provision(session: dict, cohort: dict) -> str | None:
 
 
 async def hourly(now: datetime | None = None) -> dict:
-    from app.config import settings
+    from app.services import calling_service
     now = now or datetime.now(timezone.utc)
     rows = (_t("cohort_session").select("id, cohort_id, scheduled_at, duration_minutes, status, video_session_id, lead_tutor_id")
             .eq("status", "scheduled").is_("video_session_id", "null")
@@ -70,9 +70,9 @@ async def hourly(now: datetime | None = None) -> dict:
     out = {"due": len(rows), "made": 0}
     if not rows:
         return out
-    if not settings.DAILY_API_KEY:
-        logger.warning("pod rooms: %s session(s) due in 24 h but DAILY_API_KEY is empty: no rooms made", len(rows))
-        out["skipped"] = "no_daily_key"
+    if not calling_service.can_make_rooms():
+        logger.warning("pod rooms: %s session(s) due in 24 h but the video provider has no key: no rooms made", len(rows))
+        out["skipped"] = "no_video_key"
         return out
     cohorts = {c["id"]: c for c in (_t("cohorts").select("id, name, tutor_id, status")
                .in_("id", list({r["cohort_id"] for r in rows})).execute()).data or []}

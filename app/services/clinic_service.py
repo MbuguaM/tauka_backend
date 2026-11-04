@@ -99,7 +99,7 @@ async def provision_room(clinic_id: str) -> str | None:
         return c.get("video_session_id")
     start = _ts(c["starts_at"])
     end = start + timedelta(minutes=int(c["duration_minutes"]))
-    url = await calling_service.create_daily_room(
+    url = await calling_service.create_room(
         f"cl-{clinic_id.replace('-', '')}", int((end + timedelta(hours=1)).timestamp()))
     try:
         # app.video_session (tauka-flutter, video): CONFLICT-055.

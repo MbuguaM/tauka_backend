@@ -177,6 +177,14 @@ class Settings(BaseSettings):
     # two links from web_base_url, which 404s on the React router.
     api_base_url: str = "https://api.tauka.io"
 
+    # ── Installers (§155, download_service) ───────────────────────────────────
+    # Object names in the private `downloads` bucket. Empty = that platform isn't available.
+    download_path_windows: str = ""
+    download_path_macos: str = ""
+    download_path_android: str = ""
+    # Signs the update feed address a signed-in desktop app is given.
+    download_token_secret: str = ""
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated browser origins allowed to call this API. The browser
     # sends a preflight OPTIONS for every request carrying
@@ -241,6 +249,9 @@ class Settings(BaseSettings):
             if (self.payment_provider or "").strip().lower() == "demo":
                 problems.append("PAYMENT_PROVIDER=demo on a public API_BASE_URL. The test checkout "
                                 "refuses to run there, so gift cards and gifted seats can't be bought.")
+            if not self.daily_api_key and not (self.livekit_url and self.livekit_api_key and self.livekit_api_secret):
+                problems.append("No video provider is configured: set DAILY_API_KEY, or LIVEKIT_URL, "
+                                "LIVEKIT_API_KEY and LIVEKIT_API_SECRET. Rooms can't be created.")
             # A Vercel Preview is where test keys belong. Anywhere else, Paystack's published
             # test cards would buy real plans.
             if self.paystack_secret_key.startswith("sk_test_") and os.environ.get("VERCEL_ENV") != "preview":
@@ -249,7 +260,7 @@ class Settings(BaseSettings):
             for name, value, why in (
                 ("CRON_SECRET", self.cron_secret, "scheduled jobs can't be authenticated"),
                 ("ENCRYPTION_KEY", self.encryption_key, "payout and M-Pesa details can't be encrypted"),
-                ("DAILY_API_KEY", self.daily_api_key, "pod and exchange rooms can't be created"),
+                ("DOWNLOAD_TOKEN_SECRET", self.download_token_secret, "installed desktop apps can't check for updates"),
                 ("PAYSTACK_SECRET_KEY", self.paystack_secret_key, "plans, gift cards and gifted seats answer not_configured"),
                 ("PAYSTACK_PLAN_LEARNER", self.paystack_plan_learner, "the Learner plan answers not_configured"),
                 ("PAYSTACK_PLAN_TUTOR", self.paystack_plan_tutor, "the Tutor plan answers not_configured"),

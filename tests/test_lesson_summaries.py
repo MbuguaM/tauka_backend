@@ -194,7 +194,7 @@ async def test_pod_rooms():
     with patch("app.services.cohort_room_service.db", fake), \
          patch("app.config.settings.daily_api_key", ""):
         out = await rooms.hourly(NOW)
-    assert out["skipped"] == "no_daily_key" and fake.rows["video_session"] == []
+    assert out["skipped"] == "no_video_key" and fake.rows["video_session"] == []
     with patch("app.services.cohort_room_service.db", fake), \
          patch("app.config.settings.daily_api_key", "k"), \
          patch("app.services.calling_service.create_daily_room", new=AsyncMock(return_value="https://x.daily.co/p")):

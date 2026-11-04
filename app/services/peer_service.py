@@ -391,7 +391,7 @@ def _session(session_id: str, student_id: str) -> tuple[dict, list[dict]]:
 
 async def join(student_id: str, session_id: str, now: datetime | None = None) -> dict:
     """The room (made on first join, video off) and this learner's half of the task."""
-    from app.services.calling_service import create_daily_room
+    from app.services.calling_service import create_room, is_livekit_room, livekit_access
     _require_on()
     now = now or _now()
     s, parts = _session(session_id, student_id)
@@ -400,7 +400,7 @@ async def join(student_id: str, session_id: str, now: datetime | None = None) ->
         raise PeerRefused("not_now")
     url = s.get("room_url")
     if not url:
-        url = await create_daily_room(f"peer-{session_id.replace('-', '')}",
+        url = await create_room(f"peer-{session_id.replace('-', '')}",
                                       int((starts + timedelta(minutes=s["minutes"] + 30)).timestamp()),
                                       properties={"start_video_off": True})
         if url:
@@ -416,7 +416,13 @@ async def join(student_id: str, session_id: str, now: datetime | None = None) ->
             # 5.1: an information gap shows each side only their half.
             prompt = t["prompt_b"] if t["kind"] == "information_gap" and role == "b" else t["prompt_a"]
             task = {"title": t["title"], "kind": t["kind"], "prompt": prompt}
-    return {"room_url": url, "task": task, "minutes": s["minutes"], "role": role}
+    livekit = None
+    if is_livekit_room(url):
+        ends = int((starts + timedelta(minutes=s["minutes"] + 30)).timestamp())
+        livekit = livekit_access(url, student_id, None, ends, start_video_off=True)
+        if not livekit:
+            raise PeerRefused("no_room")
+    return {"room_url": url, "livekit": livekit, "task": task, "minutes": s["minutes"], "role": role}
 
 
 def mark(student_id: str, session_id: str, partner_came: bool, now: datetime | None = None) -> dict:

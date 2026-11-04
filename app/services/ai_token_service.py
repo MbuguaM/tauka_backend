@@ -121,7 +121,31 @@ async def checkout(student_id: str) -> dict:
 
 async def paid(purchase_id: str) -> None:
     """Called by payment_service.settle(). A repeat grants nothing. Raises if the grant fails, so Paystack retries."""
-    db.schema("app").rpc("settle_ai_token_purchase", {"p_purchase_id": purchase_id}).execute()
+    granted = db.schema("app").rpc("settle_ai_token_purchase", {"p_purchase_id": purchase_id}).execute().data
+    if granted is True:
+        _record_payment(purchase_id)
+
+
+def _record_payment(purchase_id: str) -> None:
+    """D17: the base of a referral commission. Best effort: a missing row costs a commission line, never the tokens."""
+    try:
+        row = (_t("ai_token_purchase").select("id, student_id, amount_minor, currency, payment_reference, paid_at")
+               .eq("id", purchase_id).limit(1).execute()).data[0]
+        _t("student_payment").insert({
+            "student_id": row["student_id"], "source": "ai_tokens", "external_ref": row.get("payment_reference") or row["id"],
+            "amount_minor": int(row["amount_minor"]), "currency": row["currency"], "paid_at": row["paid_at"],
+        }).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ai tokens: payment record failed for %s: %s", purchase_id, exc)
+
+
+def remove_payment(row: dict) -> None:
+    """A refunded pack earns no commission. A payout run already approved isn't changed."""
+    try:
+        _t("student_payment").delete().eq("source", "ai_tokens") \
+            .eq("external_ref", row.get("payment_reference") or row["id"]).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ai tokens: payment record not removed for %s: %s", row.get("id"), exc)
 
 
 async def confirm(student_id: str, reference: str) -> dict:
