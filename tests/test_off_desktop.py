@@ -3,7 +3,7 @@
 Pinned:
 1. The tutor of a session, or its cover tutor, is recorded once per session.
 2. Learners, strangers, bad ids and unknown platforms aren't recorded.
-3. The people told are those holding head_of_tutors, and an email failure stays out of the way.
+3. The people told are the owners and top-rung tutors, and an email failure stays out of the way.
 """
 from unittest.mock import AsyncMock, patch
 
@@ -25,6 +25,10 @@ def db():
         "admin_users": [{"id": "owner1", "deleted_at": None}, {"id": "gone1", "deleted_at": "2026-01-01"},
                         {"id": "ops1", "deleted_at": None}],
         "user_profiles": [{"id": "tutor1", "first_name": "Selam"}],
+        "tutor_rung": [{"tutor_id": "head1", "rung": 4, "effective_to": None},
+                       {"tutor_id": "former1", "rung": 4, "effective_to": "2026-10-01T00:00:00+00:00"},
+                       {"tutor_id": "pod1", "rung": 3, "effective_to": None},
+                       {"tutor_id": "cover1", "rung": 4, "effective_to": None}],
     })
     with patch.object(svc, "db", fake):
         yield fake
@@ -57,18 +61,25 @@ def test_bad_reports_are_refused(db, session, platform, reason):
 
 # 3
 @pytest.mark.asyncio
-async def test_holders_of_the_capability_are_told(db):
+async def test_the_owner_and_current_top_rung_tutors_are_told(db):
     row = svc.record("tutor1", VS_ID, "ios")
     send = AsyncMock(return_value={"status": "sent"})
     with patch.object(svc.email_service, "send_email", send), \
-         patch.object(svc.hs, "admin_can", side_effect=lambda a, c: a == "owner1" and c == "head_of_tutors"), \
+         patch.object(svc.hs, "admin_can", side_effect=lambda a, c: a == "owner1" and c == "owner"), \
          patch("app.services.makeup_delivery._email_of", side_effect=lambda a: f"{a}@tauka.test"):
         await svc.notify(row)
     args = send.await_args.args
-    assert args[0] == ["owner1@tauka.test"]
+    assert args[0] == ["cover1@tauka.test", "head1@tauka.test", "owner1@tauka.test"]
     assert "Selam" in args[1]
     assert "an iPhone" in args[2]
     assert db.rows["off_desktop_session"][0]["notified_at"]
+
+
+@pytest.mark.asyncio
+async def test_a_head_on_a_phone_is_not_told_about_themselves(db):
+    with patch.object(svc.hs, "admin_can", side_effect=lambda a, c: a == "owner1"), \
+         patch("app.services.makeup_delivery._email_of", side_effect=lambda a: f"{a}@tauka.test"):
+        assert svc._recipients("head1") == ["cover1@tauka.test", "owner1@tauka.test"]
 
 
 @pytest.mark.asyncio

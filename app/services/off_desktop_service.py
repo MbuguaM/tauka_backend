@@ -1,8 +1,8 @@
 """A tutor teaching from a phone (D16, §156).
 
 Tutors teach mainly from the desktop app, but a phone is allowed for a change of scenery or a
-non-standard class. When a tutor chooses it, the super admin and the head of tutors are told,
-once per session. An owner holds `head_of_tutors` through app.admin_can().
+non-standard class. When a tutor chooses it, the super admin (the `owner` capability) and the
+head of tutors (whoever holds the top tutor rung) are told, once per session.
 
 The platform comes from the app, so this is a notice and not proof. It can't stop a join: the
 app doesn't wait for it. Nothing about pay, rungs, matching or access may read these rows.
@@ -20,7 +20,7 @@ from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 
-CAPABILITY = "head_of_tutors"
+TOP_RUNG = max(hs.RUNGS)
 PLATFORM_NAMES = {"android": "an Android phone", "ios": "an iPhone"}
 
 
@@ -73,12 +73,18 @@ def record(user_id: str, video_session_id: str, platform: str) -> dict | None:
     return {**got[0], "title": session.get("title"), "scheduled_at": session.get("scheduled_at")}
 
 
-def _recipients() -> list[str]:
+def _recipients(tutor_id: str) -> list[str]:
+    """The owners and the top-rung tutors, except the tutor being reported."""
     from app.services.makeup_delivery import _email_of
     # app.admin_users (tauka-flutter): every active admin, filtered through app.admin_can().
     admins = [a["id"] for a in (_t("admin_users").select("id, deleted_at").execute()).data or []
               if not a.get("deleted_at")]
-    emails = [e for e in (_email_of(a) for a in admins if hs.admin_can(a, CAPABILITY)) if e]
+    owners = [a for a in admins if hs.admin_can(a, "owner")]
+    # A rung with no effective_to is the tutor's current one.
+    heads = [r["tutor_id"] for r in (_t("tutor_rung").select("tutor_id").eq("rung", TOP_RUNG)
+                                     .is_("effective_to", "null").execute()).data or []]
+    people = {p for p in owners + heads if p != tutor_id}
+    emails = sorted({e for e in (_email_of(p) for p in people) if e})
     return emails or ([settings.admin_email] if settings.admin_email else [])
 
 
@@ -91,7 +97,7 @@ def _tutor_name(user_id: str) -> str:
 async def notify(row: dict) -> None:
     """Runs after the response. A failure leaves notified_at empty, and never reaches the tutor."""
     try:
-        to = _recipients()
+        to = _recipients(row["tutor_id"])
         if not to:
             logger.warning("off desktop: nobody to tell about session %s", row["video_session_id"])
             return
