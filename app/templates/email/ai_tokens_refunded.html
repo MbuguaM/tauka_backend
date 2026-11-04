@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#  Sent by refund_service (§154) to whoever bought an AI token pack. #}
+{% set footer_audience = "student" %}
+{% block title %}{{ subject }}{% endblock %}
+{% block preheader %}Your refund is on its way{% endblock %}
+{% block content %}
+
+{{ ui.eyebrow("Refund") }}
+{{ ui.heading("Your refund is on its way.") }}
+{{ ui.p("We're returning " ~ amount ~ " for " ~ tokens ~ " AI tokens to the way you paid. It can take up to 10 business days to reach you.") }}
+{{ ui.p("What was left of this pack has been removed from your AI token balance.") }}
+
+{% endblock %}

@@ -1,4 +1,5 @@
 from app.core.redis_client import get_redis
+from app.services.supabase_client import supabase_admin
 from datetime import datetime
 import time
 
@@ -41,6 +42,25 @@ _PLANS: dict[str, dict] = {
 
 # Image requests cost more — apply a multiplier to the token estimate.
 _IMAGE_TOKEN_SURCHARGE = 1_000
+IMAGE_TOKEN_SURCHARGE = _IMAGE_TOKEN_SURCHARGE
+
+# A paid plan's AI allowance is this many times the plan above (ALL-18). The site promises
+# paid learners a generous allowance, so a paid plan has to allow more than Free. Only the
+# learner chat providers scale; messaging and lyric annotation keep their own limits.
+PAID_ALLOWANCE_MULTIPLIER = 5
+_AI_CHAT_PROVIDERS = ("openai", "deepseek", "gemini")
+_PAID_TIERS = ("learner_tier", "tutor_tier", "intensive_tier")
+
+
+def _on_paid_plan(user_id: str, provider: str) -> bool:
+    """Read only once the base limit is passed, so most AI calls cost no extra query. An error reads as Free."""
+    if provider not in _AI_CHAT_PROVIDERS:
+        return False
+    try:
+        rows = (supabase_admin.schema("app").table("student").select("tier").eq("id", user_id).limit(1).execute()).data or []
+        return bool(rows) and rows[0].get("tier") in _PAID_TIERS
+    except Exception:
+        return False
 
 
 def check_rate_limit(
@@ -87,15 +107,21 @@ def check_rate_limit(
         daily = redis_client.incrby(day_key, tokens)
         if daily == tokens:
             redis_client.expire(day_key, 86_400)
+        paid: bool | None = None
         if daily > plan["daily_token_limit"]:
-            return False, "Daily token limit exceeded"
+            paid = _on_paid_plan(user_id, provider)
+            if not paid or daily > plan["daily_token_limit"] * PAID_ALLOWANCE_MULTIPLIER:
+                return False, "Daily token limit exceeded"
 
         # tokens / month
         monthly = redis_client.incrby(month_key, tokens)
         if monthly == tokens:
             redis_client.expire(month_key, 2_592_000)
         if monthly > plan["monthly_token_limit"]:
-            return False, "Monthly token limit exceeded"
+            if paid is None:
+                paid = _on_paid_plan(user_id, provider)
+            if not paid or monthly > plan["monthly_token_limit"] * PAID_ALLOWANCE_MULTIPLIER:
+                return False, "Monthly token limit exceeded"
     except Exception:
         return True, "OK"
 
@@ -136,6 +162,12 @@ def get_rate_limit_status(user_id: str, provider: str = "deepseek") -> dict:
         except Exception:
             used_day = 0
             used_month = 0
+
+    # Past the base limit, the answer depends on the plan. Below it, the plan changes nothing
+    # a caller acts on, so most polls cost no extra query.
+    if (used_day >= daily_limit or used_month >= monthly_limit) and _on_paid_plan(user_id, provider):
+        daily_limit *= PAID_ALLOWANCE_MULTIPLIER
+        monthly_limit *= PAID_ALLOWANCE_MULTIPLIER
 
     return {
         "remaining": max(0, daily_limit - used_day),

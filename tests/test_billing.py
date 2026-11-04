@@ -52,6 +52,7 @@ def db():
          patch("app.services.grace_service.leave_pod_on_cancel") as leave, \
          patch.object(bs, "_email_of", return_value="L@x.test"), \
          patch.object(ps.settings, "payment_provider", "paystack"), patch.object(ps.settings, "paystack_secret_key", "sk"), \
+         patch.object(ps.settings, "api_base_url", "https://api.tauka.io"), \
          patch.object(bs.settings, "paystack_plan_tutor", "PLN_t"), patch.object(bs.settings, "mpesa_kes_tutor", 9700):
         fake.tiers, fake.grant, fake.mail, fake.grace_start, fake.grace_resolve = tiers, granted, mail, start, resolved
         fake.forfeit, fake.leave = forfeit, leave

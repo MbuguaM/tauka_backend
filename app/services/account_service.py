@@ -78,8 +78,10 @@ async def pay_now(user_id: str) -> dict:
 
 
 async def get_billing_history(user_id: str, limit: int = 10, starting_after: str | None = None) -> list[dict]:
-    """Paid months, newest first. `starting_after` is unused: the page shows the latest few."""
-    return billing_service.history(user_id, limit)
+    """Paid months and AI token packs, newest first. `starting_after` is unused: the page shows the latest few."""
+    from app.services import ai_token_service
+    rows = billing_service.history(user_id, limit) + ai_token_service.history(user_id, limit)
+    return sorted(rows, key=lambda r: str(r.get("date") or ""), reverse=True)[:limit]
 
 
 async def get_payment_method(user_id: str) -> dict | None:

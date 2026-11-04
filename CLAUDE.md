@@ -84,7 +84,7 @@ Required variables in `.env`:
 | `MODEL_NAME` | No | Default DeepSeek model (default: `deepseek-chat`) |
 | `TOKEN_LIMIT` | No | Monthly token cap (default: `100000`) |
 | `SENTRY_DSN` | No | Error reporting (API-6). Empty = off. Request bodies are scrubbed (L-001) |
-| `PAYMENT_PROVIDER` | No | One-off payments (§145): `paystack` (default), or `demo` for the local test checkout, which refuses to run unless `API_BASE_URL` is local |
+| `PAYMENT_PROVIDER` | No | One-off payments (§145): `paystack` (default), which refuses to run on a local `API_BASE_URL`, or `demo` for the local test checkout, which refuses to run anywhere else. Paystack test keys belong in a deployed preview, see `DEMO.md` |
 | `PAYSTACK_PLAN_LEARNER` / `_TUTOR` / `_INTENSIVE` | For monthly plans | Plan codes from the Paystack dashboard (§151). Empty = that plan answers `not_configured` |
 | `PAYSTACK_SECRET_KEY` | For plans, gift cards and gifted seats | Paystack API key. It also verifies `POST /payments/paystack/webhook`. Empty = `not_configured` |
 | `STRIPE_SECRET_KEY` | For billing | Stripe API key |

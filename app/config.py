@@ -241,6 +241,11 @@ class Settings(BaseSettings):
             if (self.payment_provider or "").strip().lower() == "demo":
                 problems.append("PAYMENT_PROVIDER=demo on a public API_BASE_URL. The test checkout "
                                 "refuses to run there, so gift cards and gifted seats can't be bought.")
+            # A Vercel Preview is where test keys belong. Anywhere else, Paystack's published
+            # test cards would buy real plans.
+            if self.paystack_secret_key.startswith("sk_test_") and os.environ.get("VERCEL_ENV") != "preview":
+                problems.append("PAYSTACK_SECRET_KEY is a test key outside a preview deployment: "
+                                "anyone with a published test card gets a paid plan for free.")
             for name, value, why in (
                 ("CRON_SECRET", self.cron_secret, "scheduled jobs can't be authenticated"),
                 ("ENCRYPTION_KEY", self.encryption_key, "payout and M-Pesa details can't be encrypted"),

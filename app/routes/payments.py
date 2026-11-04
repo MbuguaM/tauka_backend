@@ -87,7 +87,7 @@ async def demo_checkout(reference: str):
     if not order:
         raise HTTPException(status_code=404)
     amount = f"{order['currency']} {order['amount_minor'] / 100:,.2f}"
-    what = f"{order['months']} month(s) of {order['tier'].replace('_tier', '').title()}"
+    what = order["what"]
     already = order["status"] != "pending"
     action = html.escape(reference, quote=True)
     pay = ('<p>This order is already paid.</p>' if already else

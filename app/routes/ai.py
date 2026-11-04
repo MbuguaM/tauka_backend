@@ -2,14 +2,16 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from app.core.flags import is_ready
 from app.core.followup import run_followup
 from app.dependencies import get_current_user
 from app.models.schemas import AIRequest
+from app.services import ai_token_service
 from app.services.ai_prompts import FRAMED_MODES, build_framed_prompt
 from app.services.ai_services import call_ai, take_last_usage
 from app.services.ai_usage_service import log_ai_usage
 from app.services.token_service import count_tokens
-from app.services.rate_limit_service import check_rate_limit, get_rate_limit_status
+from app.services.rate_limit_service import IMAGE_TOKEN_SURCHARGE, check_rate_limit, get_rate_limit_status
 from app.services.usage_service import log_usage
 
 logger = logging.getLogger(__name__)
@@ -39,8 +41,13 @@ async def balance(
     Identity comes from the JWT. The client also sends `?userId=` — it is
     ignored on purpose: a caller must never be able to read another user's
     budget by changing a query string.
+
+    `purchased` is what they have left of any AI tokens they bought (§154), used once the
+    allowance runs out. `tokens_on_sale` lets a desktop app show its buy button.
     """
-    return get_rate_limit_status(user_id, provider=provider)
+    return {**get_rate_limit_status(user_id, provider=provider),
+            "purchased": ai_token_service.balance(user_id),
+            "tokens_on_sale": is_ready("ai_tokens")}
 
 
 @router.post("/generate")
@@ -77,9 +84,16 @@ async def generate(
         provider=req.provider,
         mode=req.mode,
     )
+    # Past the allowance, bought tokens pay for the call (§154). The per-minute limit still
+    # applies, and without enough tokens the learner sees the same 429 as before.
+    surcharge = IMAGE_TOKEN_SURCHARGE if req.mode == "image_translation" else 0
+    held = 0
     if not allowed:
-        raise HTTPException(status_code=429, detail=reason)
+        if "token limit" not in (reason or "") or not ai_token_service.hold(user_id, estimated + surcharge):
+            raise HTTPException(status_code=429, detail=reason)
+        held = estimated + surcharge
 
+    delivered = False
     try:
         response = await call_ai(
             prompt=user_prompt,
@@ -89,6 +103,7 @@ async def generate(
             image_url=req.image_url,
             system=system_prompt,
         )
+        delivered = True
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPStatusError as e:
@@ -114,6 +129,10 @@ async def generate(
             status_code=502,
             detail=f"AI provider '{req.provider}' is unreachable.",
         )
+    finally:
+        # Any failure, including one not handled above, spent nothing.
+        if held and not delivered:
+            ai_token_service.give_back(user_id, held)
 
     # Taken here, immediately, while it is still this call's value. It is None
     # whenever the provider did not report usage — including every path where
@@ -122,6 +141,11 @@ async def generate(
     usage = take_last_usage()
 
     actual = count_tokens(billable, model=model) + count_tokens(response, model=model)
+    if held:
+        await run_followup(
+            ai_token_service.settle_call(user_id, held, actual + surcharge),
+            label=f"settle_ai_tokens {user_id}",
+        )
     # Inline: usage feeds the daily/monthly token caps, so losing these writes
     # silently raises every user's effective limit. One insert against Supabase.
     await run_followup(

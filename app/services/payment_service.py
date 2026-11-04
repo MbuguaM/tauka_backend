@@ -4,7 +4,9 @@ Gift cards and sponsored seats call `checkout()` and never name a provider. A
 payment is settled in exactly one place, `settle()`, whichever provider reports it.
 
 PAYMENT_PROVIDER:
-  paystack  real payments. Needs PAYSTACK_SECRET_KEY (a test key behaves the same).
+  paystack  real payments. Needs PAYSTACK_SECRET_KEY (a test key behaves the same). Refused
+            on a local API_BASE_URL: Paystack keys, test ones included, are only tried on
+            a deployed server, where the webhook can reach us. Use demo locally.
   demo      a local page with Pay and Cancel buttons, so the whole flow can be tried
             with no account. Refused unless API_BASE_URL is a local address, so a
             deploy that ships this setting takes no free orders.
@@ -39,6 +41,7 @@ KINDS = {
     "gc": ("gift_card", "/gift-card/thanks", "/gift-card"),
     "sp": ("sponsorship", "/gift/thanks", "/gift"),
     "mo": ("billing_payment", "/account/subscription", "/account/subscription"),   # a month of a plan (§151)
+    "tk": ("ai_token_purchase", "/account/ai-tokens", "/account/ai-tokens"),       # an AI token pack (§154)
 }
 
 
@@ -60,7 +63,7 @@ def provider() -> str:
 def configured() -> bool:
     p = provider()
     if p == "paystack":
-        return bool(settings.paystack_secret_key)
+        return bool(settings.paystack_secret_key) and not settings._is_local(settings.api_base_url)
     if p == "demo":
         return settings._is_local(settings.api_base_url)
     return False
@@ -90,7 +93,7 @@ async def checkout(kind: str, row_id: str, amount_minor: int, currency: str, ema
         if not configured():
             raise PaymentFailed("The demo provider only runs on a local address.")
         return Checkout(f"{settings.api_base_url.rstrip('/')}/payments/demo/{reference}", p, reference)
-    if p != "paystack" or not settings.paystack_secret_key:
+    if p != "paystack" or not configured():
         raise PaymentFailed(f"Payment provider {p!r} is not configured.")
 
     _, success, cancel = KINDS[kind]
@@ -144,6 +147,9 @@ async def settle(reference: str, amount_minor: int, currency: str) -> bool:
     elif kind == "mo":
         from app.services.billing_service import settle_month
         await settle_month(row)
+    elif kind == "tk":
+        from app.services.ai_token_service import paid as tokens_paid
+        await tokens_paid(row_id)
     else:
         from app.services.sponsorship_service import paid
         await paid(row_id)
@@ -231,6 +237,7 @@ def demo_order(reference: str) -> dict | None:
         return None
     _, success, cancel = KINDS[parts[0]]
     base = settings.web_base_url.rstrip("/")
+    what = (f"{row['tokens']:,} AI tokens" if parts[0] == "tk"
+            else f"{row.get('months', 1)} month(s) of {row['tier'].replace('_tier', '').title()}")
     return {"amount_minor": int(row["amount_minor"]), "currency": row["currency"], "status": row["status"],
-            "months": row.get("months", 1), "tier": row["tier"], "success_url": f"{base}{success}",
-            "cancel_url": f"{base}{cancel}"}
+            "what": what, "success_url": f"{base}{success}", "cancel_url": f"{base}{cancel}"}

@@ -1,14 +1,24 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from app.dependencies import get_current_user
 from app.models.schemas import ChangeSubscriptionRequest
-from app.services import account_service
+from app.services import account_service, ai_token_service
+from app.services.ai_token_service import TokensRefused
 from app.services.billing_service import BillingRefused
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _STATUS = {"already_subscribed": 409, "not_configured": 503, "not_enabled": 403, "no_such_plan": 404,
            "plan_change_unavailable": 409, "not_ready": 409, "payment_failed": 502}
+
+
+_TOKEN_STATUS = {"not_enabled": 403, "not_configured": 503, "learners_only": 403, "no_email": 400,
+                 "no_such_order": 404, "payment_failed": 502}
+
+
+class ConfirmTokens(BaseModel):
+    reference: str = Field(..., max_length=60)
 
 
 def _refused(exc: BillingRefused) -> HTTPException:
@@ -81,13 +91,37 @@ async def pay_now(user_id: str = Depends(get_current_user)):
         raise _refused(exc)
 
 
+@router.get("/ai-tokens")
+async def ai_tokens(user_id: str = Depends(get_current_user)):
+    """Tokens left, and the pack on sale."""
+    return ai_token_service.state(user_id)
+
+
+@router.post("/ai-tokens/checkout")
+async def ai_tokens_checkout(user_id: str = Depends(get_current_user)):
+    """Open a payment for one pack."""
+    try:
+        return await ai_token_service.checkout(user_id)
+    except TokensRefused as exc:
+        raise HTTPException(status_code=_TOKEN_STATUS.get(exc.reason, 400), detail={"reason": exc.reason})
+
+
+@router.post("/ai-tokens/confirm")
+async def ai_tokens_confirm(req: ConfirmTokens, user_id: str = Depends(get_current_user)):
+    """The buyer is back from checkout. Grants if Paystack says it's paid, and only for their own order."""
+    try:
+        return await ai_token_service.confirm(user_id, req.reference)
+    except TokensRefused as exc:
+        raise HTTPException(status_code=_TOKEN_STATUS.get(exc.reason, 400), detail={"reason": exc.reason})
+
+
 @router.get("/billing-history")
 async def billing_history(
     user_id: str = Depends(get_current_user),
     limit: int = Query(default=10, ge=1, le=100),
     starting_after: str | None = Query(default=None),
 ):
-    """Paid months, newest first."""
+    """Paid months and AI token packs, newest first."""
     return await account_service.get_billing_history(user_id, limit, starting_after)
 
 

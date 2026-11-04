@@ -76,6 +76,29 @@ def test_webhook_needs_a_good_signature(db, client):
     db.card.assert_awaited_once_with("g1")
 
 
+def test_a_local_server_never_uses_paystack(db):
+    with patch.object(ps.settings, "api_base_url", "http://localhost:8000"):
+        assert ps.configured() is False
+
+
+@pytest.mark.asyncio
+async def test_a_local_checkout_refuses_a_paystack_key(db):
+    with patch.object(ps.settings, "api_base_url", "http://127.0.0.1:8000"), pytest.raises(ps.PaymentFailed):
+        await ps.checkout("gc", "g1", 15000, "USD", "b@x.test", "A gift")
+
+
+@pytest.mark.parametrize("vercel_env,flagged", [("production", True), (None, True), ("preview", False)])
+def test_a_test_key_is_flagged_outside_a_preview(monkeypatch, vercel_env, flagged):
+    if vercel_env:
+        monkeypatch.setenv("VERCEL_ENV", vercel_env)
+    else:
+        monkeypatch.delenv("VERCEL_ENV", raising=False)
+    with patch.object(ps.settings, "paystack_secret_key", "sk_test_x"), \
+         patch.object(ps.settings, "api_base_url", "https://api.tauka.io"):
+        problems = ps.settings.deployment_problems()
+    assert any("test key" in p for p in problems) is flagged
+
+
 def test_no_key_means_no_signature_passes():
     with patch.object(ps.settings, "paystack_secret_key", ""):
         assert ps.paystack_signature_ok(b"{}", hmac.new(b"", b"{}", hashlib.sha512).hexdigest()) is False

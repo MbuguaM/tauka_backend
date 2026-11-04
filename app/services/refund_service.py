@@ -1,4 +1,4 @@
-"""Refunds on gift cards and sponsored seats (§146). Finance or ops only.
+"""Refunds on gift cards, sponsored seats and AI token packs (§146, §154). Finance or ops only.
 
 THE RULE, matching the supporter gift's (gift_service.request_refund):
   unused (a paid card, an unclaimed seat)   refundable, and the code or link dies at once
@@ -11,6 +11,9 @@ rule for what it then buys.
 status moves to 'refunded' BEFORE the provider is called, so nobody can redeem a
 code while its money is on the way back. If the provider refuses, the status goes
 back. refund_state then follows the provider, which can take days and can fail.
+
+AI token packs follow the same rule. "In use" means the learner's balance is below the
+pack's size, counted from when it was paid. Refunding removes what's left of the pack.
 """
 
 import logging
@@ -84,7 +87,71 @@ def orders(actor: str, limit: int = 200) -> list[dict]:
             out.append({**r, "kind": kind, "payer_email": payer_email, "used_at": used_at,
                         "in_use": r["status"] == used,
                         "refundable": _refundable(kind, r["status"], used_at, r.get("refund_state"), r.get("payment_provider"))})
+    out.extend(_token_orders(limit))
     return sorted(out, key=lambda r: str(r["created_at"]), reverse=True)[:limit]
+
+
+def _token_orders(limit: int) -> list[dict]:
+    from app.services import ai_token_service
+    rows = (_t("ai_token_purchase").select("*").in_("status", ["paid", "refunded"])
+            .order("created_at", desc=True).limit(limit).execute()).data or []
+    out = []
+    for r in rows:
+        in_use = r["status"] == "paid" and ai_token_service.balance(r["student_id"]) < r["tokens"]
+        refundable = bool(r.get("payment_provider")) and (
+            r.get("refund_state") == "failed" if r["status"] == "refunded"
+            else not in_use or _ts(r["paid_at"]) + WINDOW >= _now())
+        out.append({"id": r["id"], "status": r["status"], "tokens": r["tokens"], "amount_minor": r["amount_minor"],
+                    "currency": r["currency"], "payment_provider": r.get("payment_provider"),
+                    "payment_reference": r.get("payment_reference"), "created_at": r["created_at"],
+                    "refund_state": r.get("refund_state"), "refund_reason": r.get("refund_reason"),
+                    "refund_requested_at": r.get("refund_requested_at"), "refund_processed_at": r.get("refund_processed_at"),
+                    "kind": "tk", "payer_email": r.get("email"), "used_at": None, "in_use": in_use, "refundable": refundable})
+    return out
+
+
+async def _refund_tokens(actor: str, row: dict, reference: str, reason: str, revoke_access: bool, now: datetime) -> dict:
+    from app.services import ai_token_service
+    status = row["status"]
+    retry = status == "refunded" and row.get("refund_state") == "failed"
+    if not row.get("payment_provider") or (status != "paid" and not retry):
+        raise RefundRefused("not_refundable")
+    in_use = status == "paid" and ai_token_service.balance(row["student_id"]) < row["tokens"]
+    if in_use:
+        if not revoke_access:
+            raise RefundRefused("in_use")
+        if _ts(row["paid_at"]) + WINDOW < now:
+            raise RefundRefused("window_passed")
+
+    claim = {"status": "refunded", "refund_state": "requested", "refund_reason": reason, "refunded_by": actor,
+             "refund_requested_at": now.isoformat()}
+    got = (_t("ai_token_purchase").update(claim).eq("id", row["id"]).eq("status", status).execute()).data or []
+    if not got:
+        raise RefundRefused("not_refundable")
+    # Tokens go first, so none can be spent while the money is on its way back. A retry
+    # already removed them.
+    removed = 0
+    if not retry:
+        removed = db.schema("app").rpc("take_back_ai_tokens", {"p_purchase_id": row["id"]}).execute().data or 0
+    try:
+        await ps.provider_refund(row["payment_provider"], reference, reason)
+    except ps.PaymentFailed as exc:
+        back = {"status": status, "refund_state": "failed" if retry else None, "refund_reason": row.get("refund_reason"),
+                "refunded_by": row.get("refunded_by"), "refund_requested_at": row.get("refund_requested_at")}
+        _t("ai_token_purchase").update(back).eq("id", row["id"]).execute()
+        if removed:
+            ai_token_service.adjust(row["student_id"], removed, "return")
+        raise RefundRefused("payment_failed") from exc
+
+    state = "requested"
+    if row["payment_provider"] == "demo":
+        state = "processed"
+        _t("ai_token_purchase").update({"refund_state": state, "refund_processed_at": now.isoformat()}).eq("id", row["id"]).execute()
+    if not retry:
+        await _mail(row.get("email"), "ai_tokens_refunded", {
+            "subject": "Your Tauka refund", "amount": f"{row['currency']} {int(row['amount_minor']) / 100:,.2f}",
+            "tokens": f"{row['tokens']:,}"})
+    return {"reference": reference, "status": "refunded", "refund_state": state, "access_taken_back": in_use}
 
 
 def _refundable(kind: str, status: str, used_at, refund_state, provider, now: datetime | None = None) -> bool:
@@ -123,6 +190,8 @@ async def refund(actor: str, reference: str, reason: str, revoke_access: bool = 
     if not row:
         raise RefundRefused("no_such_order")
     kind, row_id = parts
+    if kind == "tk":
+        return await _refund_tokens(actor, row, reference, reason, revoke_access, now)
     if kind not in USE:
         raise RefundRefused("not_refundable")     # a monthly payment: refund it in Paystack
     table = ps.KINDS[kind][0]
