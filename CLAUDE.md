@@ -248,9 +248,10 @@ in `app/models/schemas.py`. Note `deepseek` has no `image_translation` support.
 4. `token_service.count_tokens()` — uses tiktoken cl100k_base for unknown models (DeepSeek, Gemini)
 5. `usage_service.log_usage()` — fire-and-forget background task; event type = `ai_tokens:{provider}:{mode}`
 
-## Calling Service (`POST /calls/token`)
+## Calling Service
 
-Vendor selection order: request override → `app.video_vendor_config` active row → `"daily"`.
+Vendor selection order: `app.video_vendor_config` active row → `"daily"`.
+`POST /calls/token` was removed 2026-11-05 (ALL-27): nothing called it, and its Daily path gave any signed-in user a room and token for any name.
 A LiveKit room has no page: it's stored as `livekit://<name>` in the same column as a Daily address, and each person joins with their own token from `POST /calls/sessions/{id}/join` (`session_join_service`, which checks they're in the session and it's near its time), or from the exchange and peer join routes. Scheduled sessions call `calling_service.create_room`, never a provider directly. A session keeps the provider it was made with.
 
 The active vendor lives in `app.video_vendor_config`, which enforces a **single active

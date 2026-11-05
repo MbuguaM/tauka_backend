@@ -3,10 +3,9 @@ Multi-vendor calling service.
 
 Supported vendors: daily | livekit
 
-Vendor selection order:
-  1. Caller-supplied vendor override (from CallRequest.vendor)
-  2. Active row in app.video_vendor_config (Supabase)
-  3. Falls back to "daily" if neither is available
+Vendor selection order (app.video_vendor_config, via get_active_vendor):
+  1. Active row in app.video_vendor_config (Supabase)
+  2. Falls back to "daily" if there is none
 
 HOW A ROOM IS STORED
   A session's room is one text column, whichever provider made it. Daily has a page address.
@@ -74,63 +73,13 @@ async def create_room(name: str, expires_at: int, properties: dict | None = None
 # Daily.co
 # ---------------------------------------------------------------------------
 
-async def generate_daily_token(user_id: str, room: str) -> dict:
-    """
-    Creates a Daily.co room and returns a meeting token.
-
-    Returns dict with keys: token, room_url, vendor
-
-    UNVERIFIED ASSUMPTION, flagged 2026-08-24: the original docstring claimed
-    "Daily returns the existing room if name already exists". That has not been
-    checked against Daily's API, and `raise_for_status()` below means that if
-    Daily instead returns 400 for a duplicate name, **the second person to join
-    any session fails** while the first succeeds — an intermittent bug that would
-    look like a network problem. Verify before the first real cohort session; if
-    the API does 400, catch it and GET the existing room instead.
-    """
-    headers = {
-        "Authorization": f"Bearer {settings.DAILY_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    exp = int(time.time()) + 3600
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        # Create room — Daily returns the existing room if name already exists
-        room_res = await client.post(
-            "https://api.daily.co/v1/rooms",
-            headers=headers,
-            json={"name": room, "properties": {"exp": exp}},
-        )
-        room_res.raise_for_status()
-        room_url = room_res.json()["url"]
-
-        # Create meeting token
-        token_res = await client.post(
-            "https://api.daily.co/v1/meeting-tokens",
-            headers=headers,
-            json={
-                "properties": {
-                    "room_name": room,
-                    "exp": exp,
-                    "user_id": user_id,
-                    "is_owner": False,
-                }
-            },
-        )
-        token_res.raise_for_status()
-        token = token_res.json()["token"]
-
-    return {"token": token, "room_url": room_url, "vendor": "daily"}
-
-
 async def create_daily_room(name: str, expires_at: int, properties: dict | None = None) -> str | None:
     """Create (or find) a Daily.co room and return its URL, or None.
 
     For scheduled sessions that need a room before anyone joins — make-ups
     (enrolment plan §2f item 3). Never raises: a room that couldn't be made is a
-    tutor pasting a link, not a booking that failed. Unlike
-    `generate_daily_token`, a duplicate name is handled — Daily answers 400 when
-    the room already exists, so the existing room is fetched instead.
+    tutor pasting a link, not a booking that failed. A duplicate name is handled:
+    Daily answers 400 when the room already exists, so the existing room is fetched.
     """
     if not settings.DAILY_API_KEY:
         return None
@@ -265,26 +214,3 @@ def livekit_access(url: str, user_id: str, name: str | None, expires_at: int, au
     token = generate_livekit_token(user_id, room, name, expires_at, audio_only)
     return {"server_url": token["room_url"], "token": token["token"], "room": room,
             "start_video_off": start_video_off or audio_only, "audio_only": audio_only}
-
-
-# ---------------------------------------------------------------------------
-# Unified dispatcher
-# ---------------------------------------------------------------------------
-
-async def generate_call_token(
-    user_id: str,
-    room: str,
-    vendor: str | None = None,
-) -> dict:
-    """
-    Generate a call token for the appropriate vendor.
-
-    vendor is resolved from: override → DB config → "daily"
-    """
-    resolved = vendor or get_active_vendor()
-
-    if resolved == "livekit":
-        return generate_livekit_token(user_id, room)
-
-    # Default: Daily.co
-    return await generate_daily_token(user_id, room)

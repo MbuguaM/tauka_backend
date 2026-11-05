@@ -4,7 +4,6 @@ Pinned:
 1. A room comes from the active provider, and LiveKit needs all three settings.
 2. A token is for one person in one room: their name, expiry and what they may send.
 3. Only someone in the session gets one, and only near its time.
-4. /calls/token can't be used to walk into a room by name.
 5. Exchange and peer calls carry a token, and a low-data partner can't send video.
 """
 from datetime import datetime, timedelta, timezone
@@ -164,22 +163,3 @@ def test_the_route_refuses_a_lapsed_learner(client, auth_headers, db):
         assert client.post("/calls/sessions/vs1/join", headers=auth_headers).status_code == 402
 
 
-# 4
-def test_calls_token_refuses_a_room_you_are_not_in(client, auth_headers, db):
-    gen = AsyncMock()
-    with patch("app.routes.calling.generate_call_token", gen), patch("app.services.grace_service.is_lapsed", return_value=False):
-        res = client.post("/calls/token", json={"room": "pod-1", "vendor": "livekit"}, headers=auth_headers)
-    assert res.status_code == 403
-    gen.assert_not_awaited()
-
-
-def test_calls_token_gives_it_to_someone_in_the_room(client, auth_headers, db):
-    db.rows["video_session_participant"].append({"session_id": "vs1", "student_id": TEST_USER_ID})
-    with patch("app.services.grace_service.is_lapsed", return_value=False), patch("app.routes.calling.log_usage"):
-        res = client.post("/calls/token", json={"room": "pod-1", "vendor": "livekit"}, headers=auth_headers)
-    assert res.status_code == 200 and res.json()["vendor"] == "livekit"
-
-
-def test_a_failed_check_refuses(db):
-    with patch.object(js, "_t", side_effect=RuntimeError("down")):
-        assert js.may_join_room("tutor1", "pod-1") is False

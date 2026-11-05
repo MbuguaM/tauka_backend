@@ -124,13 +124,12 @@ def test_cancel_leaves_the_pod(db):
 @pytest.mark.asyncio
 async def test_lapsed_gates(db):
     from fastapi import HTTPException
-    from app.models.schemas import CallRequest
     from app.routes import calling
     from app.services import clinic_service
     await gs.start("s1", "in_1", NOW)
     await gs.daily(NOW + timedelta(days=8))
     with pytest.raises(HTTPException) as e:
-        await calling.create_call_token(CallRequest(room="r1"), user_id="s1")
+        await calling.join_session("vs1", user_id="s1")
     assert e.value.status_code == 402
     with pytest.raises(clinic_service.ClinicRefused) as e:
         clinic_service.book("s1", "c1")

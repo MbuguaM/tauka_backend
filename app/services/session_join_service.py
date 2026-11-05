@@ -57,17 +57,6 @@ def _in_session(user_id: str, vs: dict) -> bool:
     return False
 
 
-def may_join_room(user_id: str, room: str) -> bool:
-    """For a token asked for by room name. A room with no session belongs to nobody. Fails closed."""
-    try:
-        rows = (_t("video_session").select(_FIELDS).eq("video_call_url", f"{calling_service.LIVEKIT_SCHEME}{room}")
-                .limit(1).execute()).data or []
-        return bool(rows) and _in_session(user_id, rows[0])
-    except Exception as exc:  # noqa: BLE001
-        logger.error("livekit: could not check %s for %s: %s", room, user_id, exc)
-        return False
-
-
 def _display_name(user_id: str) -> str | None:
     # app.user_profiles (tauka-flutter): first_name is the name shown to others in a call.
     rows = (_t("user_profiles").select("first_name").eq("id", user_id).limit(1).execute()).data or []

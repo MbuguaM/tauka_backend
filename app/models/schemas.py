@@ -55,11 +55,6 @@ class MessageRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=4000)
 
 
-class CallRequest(BaseModel):
-    room: str
-    vendor: Optional[Literal["daily", "livekit"]] = None
-
-
 # ── Segment A — Subscriptions ──────────────────────────────────────────────────
 
 class SubscriptionCheckoutRequest(BaseModel):
