@@ -124,3 +124,60 @@ def test_suggest_intensive(db):
     assert ads.suggest_intensive("x", "intensive_tier", NOW) is False
     db.rows["one_to_one_session"][0]["status"] = "cancelled"
     assert ads.suggest_intensive("x", "tutor_tier", NOW) is False
+
+
+# ALL-22: Stripe's refund event
+def _charge(**over):
+    return {"id": "ch_1", "amount": 9900, "amount_refunded": 9900, "invoice": None, "payment_intent": "pi_1", **over}
+
+
+def _refund_setup(db):
+    db.rows["addon_purchase"].append({"id": "a1", "student_id": "s1", "sessions": 4, "status": "paid", "stripe_session_id": "cs_9"})
+    db.rows["student_payment"] = [{"student_id": "s1", "source": "addon", "external_ref": "cs_9", "amount_minor": 9900}]
+    sessions = type("Page", (), {"data": [type("Session", (), {"id": "cs_9"})()]})()
+    mail = AsyncMock(return_value={"status": "sent"})
+    return patch("app.services.refund_service.db", db), patch("stripe.checkout.Session.list", return_value=sessions), \
+        patch("app.services.email_service.send_template_email", mail), mail
+
+
+@pytest.mark.asyncio
+async def test_a_refunded_addon_leaves_commission_and_tells_ops_once(db):
+    from app.services import stripe_service as ss
+    rs_db, listing, emails, mail = _refund_setup(db)
+    with rs_db, listing, emails:
+        await ss._handle_charge_refunded(_charge())
+        await ss._handle_charge_refunded(_charge())     # Stripe sent it twice
+    assert db.rows["student_payment"] == [] and db.rows["addon_purchase"][0]["status"] == "refunded"
+    mail.assert_awaited_once()
+    assert mail.await_args.args[2]["sessions"] == 4
+
+
+@pytest.mark.asyncio
+async def test_a_partial_addon_refund_counts_the_rest(db):
+    from app.services import stripe_service as ss
+    rs_db, listing, emails, mail = _refund_setup(db)
+    with rs_db, listing, emails:
+        await ss._handle_charge_refunded(_charge(amount_refunded=2000))
+        await ss._handle_charge_refunded(_charge(amount_refunded=3000))     # the running total, not another 3000
+    assert db.rows["student_payment"][0]["amount_minor"] == 6900
+    assert db.rows["addon_purchase"][0]["status"] == "paid"
+    mail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_refunded_invoice_leaves_commission(db):
+    from app.services import stripe_service as ss
+    db.rows["student_payment"] = [{"student_id": "s1", "source": "stripe_invoice", "external_ref": "in_1", "amount_minor": 7500}]
+    with patch("app.services.refund_service.db", db):
+        await ss._handle_charge_refunded(_charge(invoice="in_1", amount=7500, amount_refunded=7500))
+    assert db.rows["student_payment"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_refund_on_some_other_checkout_changes_nothing(db):
+    from app.services import stripe_service as ss
+    db.rows["student_payment"] = [{"student_id": "s1", "source": "addon", "external_ref": "cs_other", "amount_minor": 100}]
+    sessions = type("Page", (), {"data": [type("Session", (), {"id": "cs_gift"})()]})()
+    with patch("stripe.checkout.Session.list", return_value=sessions):
+        await ss._handle_charge_refunded(_charge())
+    assert len(db.rows["student_payment"]) == 1

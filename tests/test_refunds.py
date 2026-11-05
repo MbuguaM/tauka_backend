@@ -220,6 +220,8 @@ def test_orders_lists_both_kinds_and_says_what_can_be_refunded(db):
     ("seat_refunded", dict(months=1, tier="Learner")),
     ("payment_refund_ops", dict(reference="gc-g1", state="failed", outside=False)),
     ("payment_refund_ops", dict(reference="gc-g1", outside=True)),
+    ("payment_refund_ops", dict(reference="mo-p1", state="processed", outside=True, monthly=True)),
+    ("payment_refund_ops", dict(reference="a1", state="refunded", outside=True, addon=True, sessions=4)),
 ])
 def test_refund_emails_render(name, data):
     from app.services import email_service

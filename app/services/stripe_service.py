@@ -209,6 +209,9 @@ async def process_webhook_event(payload: bytes, sig_header: str) -> dict:
         from app.services.mpesa_service import on_invoice_overdue
         await on_invoice_overdue(event["data"]["object"])
         handled = True
+    elif event_type == "charge.refunded":
+        await _handle_charge_refunded(event["data"]["object"])
+        handled = True
 
     return {"handled": handled, "event_type": event_type}
 
@@ -379,6 +382,25 @@ def _record_payment(invoice: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         if "duplicate" not in str(exc).lower() and "unique" not in str(exc).lower():
             logger.warning("could not record payment %s: %s", invoice.get("id"), exc)
+
+
+async def _handle_charge_refunded(charge: dict) -> None:
+    """ALL-22: refunded money stops counting toward commission. Stripe sends the running total
+    refunded, so a repeat of this event, or a second partial refund, comes out right."""
+    from app.services.addon_service import refunded as addon_refunded
+    from app.services.refund_service import set_commission_base
+
+    left = int(charge.get("amount") or 0) - int(charge.get("amount_refunded") or 0)
+    invoice = charge.get("invoice")
+    if invoice:
+        set_commission_base(invoice if isinstance(invoice, str) else invoice["id"], left)
+        return
+    payment_intent = charge.get("payment_intent")
+    if not payment_intent:
+        return
+    sessions = await asyncio.to_thread(lambda: stripe.checkout.Session.list(payment_intent=payment_intent, limit=1))
+    if not sessions.data or not await addon_refunded(sessions.data[0].id, left):
+        logger.info("refunded charge %s is not an add-on or an invoice; no commission to change", charge.get("id"))
 
 
 async def _grant_renewal_lessons(subscription_id: str, invoice_id: str | None) -> None:

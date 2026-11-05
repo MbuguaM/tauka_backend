@@ -131,6 +131,26 @@ async def activate(purchase_id: str, stripe_session_id: str | None = None) -> di
     return {"granted": int(p["sessions"]), "link": link}
 
 
+async def refunded(stripe_session_id: str, left_minor: int) -> bool:
+    """Stripe reports a refund. False if this checkout wasn't an add-on. The sessions it granted stay
+    in the learner's balance, because some may be booked or taught, so a person is told."""
+    from app.services import refund_service
+    rows = (_t("addon_purchase").select("id, sessions").eq("stripe_session_id", stripe_session_id).limit(1)
+            .execute()).data or []
+    if not rows:
+        return False
+    refund_service.set_commission_base(stripe_session_id, left_minor)
+    if left_minor > 0:
+        return True
+    got = (_t("addon_purchase").update({"status": "refunded"}).eq("id", rows[0]["id"]).eq("status", "paid")
+           .execute()).data or []
+    if got:
+        await refund_service._mail(settings.admin_email, "payment_refund_ops", {
+            "subject": f"Add-on refunded: {rows[0]['id']}", "reference": rows[0]["id"], "state": "refunded",
+            "outside": True, "addon": True, "sessions": rows[0]["sessions"]})
+    return True
+
+
 def mine(student_id: str) -> list[dict]:
     return (_t("addon_purchase").select("id, product, sessions, minutes, status, created_at, paid_at")
             .eq("student_id", student_id).order("created_at", desc=True).execute()).data or []

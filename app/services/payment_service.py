@@ -201,13 +201,21 @@ def paystack_signature_ok(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(digest, signature)
 
 
+def _minor(amount) -> int | None:
+    """Paystack sends a refund's amount as a string of minor units. None if it's missing or unreadable."""
+    try:
+        return int(amount) or None
+    except (TypeError, ValueError):
+        return None
+
+
 async def handle_paystack_event(event: dict) -> bool:
     """A successful charge grants, and a refund event updates the order. Everything
     else is acknowledged."""
     name, data = event.get("event") or "", event.get("data") or {}
     if name.startswith("refund."):
         from app.services.refund_service import provider_update
-        return await provider_update(data.get("transaction_reference") or "", name)
+        return await provider_update(data.get("transaction_reference") or "", name, amount_minor=_minor(data.get("amount")))
     if name in SUBSCRIPTION_EVENTS:
         from app.services.billing_service import handle_event
         return await handle_event(name, data)

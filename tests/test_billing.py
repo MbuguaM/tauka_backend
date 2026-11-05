@@ -300,10 +300,44 @@ def test_history_lists_paid_months_only(db):
 # 10
 @pytest.mark.asyncio
 async def test_refund_event_on_a_monthly_payment_alerts_ops(db):
-    db.rows["billing_payment"].append({"id": "p1", "student_id": S, "status": "paid", "amount_minor": 7500, "currency": "USD"})
+    db.rows["billing_payment"].append({"id": "p1", "student_id": S, "status": "paid", "amount_minor": 7500,
+                                       "currency": "USD", "reference": "mo-p1"})
+    db.rows["student_payment"].append({"student_id": S, "source": "paystack", "external_ref": "mo-p1", "amount_minor": 7500})
     with patch("app.services.refund_service.db", db):
         assert await provider_update("mo-p1", "refund.processed", NOW) is False
-    assert db.mail.await_args.args[2]["outside"] is True
+    assert db.mail.await_args.args[2]["monthly"] is True
+    assert db.rows["student_payment"] == []
+
+
+# ALL-22: a renewal has Paystack's own reference, and used to be ignored without a word.
+@pytest.mark.asyncio
+async def test_refunded_renewal_leaves_commission_and_alerts_ops(db):
+    db.rows["billing_payment"].append({"id": "p2", "student_id": S, "status": "paid", "reference": "T_renewal"})
+    db.rows["student_payment"].append({"student_id": S, "source": "paystack", "external_ref": "T_renewal", "amount_minor": 7500})
+    event = {"event": "refund.processed", "data": {"transaction_reference": "T_renewal", "amount": "7500"}}
+    with patch("app.services.refund_service.db", db):
+        await ps.handle_paystack_event(event)
+    assert db.rows["student_payment"] == []
+    assert db.mail.await_args.args[2]["reference"] == "T_renewal"
+
+
+@pytest.mark.asyncio
+async def test_partial_refund_leaves_the_rest_in_commission(db):
+    db.rows["student_payment"].append({"student_id": S, "source": "paystack", "external_ref": "T_part", "amount_minor": 7500})
+    event = {"event": "refund.processed", "data": {"transaction_reference": "T_part", "amount": "2500"}}
+    with patch("app.services.refund_service.db", db):
+        await ps.handle_paystack_event(event)
+    assert db.rows["student_payment"][0]["amount_minor"] == 5000
+
+
+@pytest.mark.asyncio
+async def test_refund_not_yet_processed_still_counts(db):
+    db.rows["billing_payment"].append({"id": "p3", "student_id": S, "status": "paid", "reference": "T_fail"})
+    db.rows["student_payment"].append({"student_id": S, "source": "paystack", "external_ref": "T_fail", "amount_minor": 7500})
+    with patch("app.services.refund_service.db", db):
+        await provider_update("T_fail", "refund.failed", NOW)
+    assert db.rows["student_payment"][0]["amount_minor"] == 7500
+    assert db.mail.await_args.args[2]["state"] == "failed"
 
 
 @pytest.mark.asyncio

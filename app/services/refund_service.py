@@ -14,6 +14,10 @@ back. refund_state then follows the provider, which can take days and can fail.
 
 AI token packs follow the same rule. "In use" means the learner's balance is below the
 pack's size, counted from when it was paid. Refunding removes what's left of the pack.
+
+COMMISSION (ALL-22): referral commission is worked out from app.student_payment, so money that
+goes back has to leave that table, however the refund was made. A payout run already approved
+isn't changed.
 """
 
 import logging
@@ -243,11 +247,39 @@ async def refund(actor: str, reference: str, reason: str, revoke_access: bool = 
     return {"reference": reference, "status": "refunded", "refund_state": state, "access_taken_back": in_use}
 
 
-async def provider_update(reference: str, event: str, now: datetime | None = None) -> bool:
+def set_commission_base(external_ref: str, left_minor: int) -> None:
+    """What's left of a payment after refunds. Nothing left removes its row. Raises, so the provider retries."""
+    if left_minor > 0:
+        _t("student_payment").update({"amount_minor": left_minor}).eq("external_ref", external_ref).execute()
+    else:
+        _t("student_payment").delete().eq("external_ref", external_ref).execute()
+
+
+def _take_out_of_commission(external_ref: str, refunded_minor: int | None) -> None:
+    """A refund of unknown size counts as all of it."""
+    rows = (_t("student_payment").select("amount_minor").eq("external_ref", external_ref).limit(1).execute()).data or []
+    if rows:
+        left = int(rows[0]["amount_minor"]) - refunded_minor if refunded_minor else 0
+        set_commission_base(external_ref, left)
+
+
+async def provider_update(reference: str, event: str, now: datetime | None = None,
+                          amount_minor: int | None = None) -> bool:
     """A provider's refund.* event. Anything unrecognised is ignored, not an error."""
     state = _STATE.get(event)
+    if not state:
+        return False
+    if state == "processed":
+        _take_out_of_commission(reference, amount_minor)
+    # A monthly payment is refunded in Paystack, not here, and a renewal has Paystack's own reference.
+    monthly = (_t("billing_payment").select("id").eq("reference", reference).limit(1).execute()).data
+    if monthly:
+        await _mail(settings.admin_email, "payment_refund_ops", {
+            "subject": f"Monthly payment refunded: {reference}", "reference": reference, "state": state,
+            "outside": True, "monthly": True})
+        return False
     parts = ps.split_reference(reference)
-    if not state or not parts:
+    if not parts:
         return False
     row = ps.order_row(*parts)
     if not row:

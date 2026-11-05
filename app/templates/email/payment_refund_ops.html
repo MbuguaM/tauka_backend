@@ -7,7 +7,13 @@
 {% block content %}
 
 {{ ui.eyebrow("Ops") }}
-{% if outside %}
+{% if monthly %}
+{{ ui.heading("A monthly payment was refunded.") }}
+{{ ui.p("The provider reports a refund on " ~ reference ~ ", now: " ~ state ~ ". Once processed, it no longer counts toward commission. The learner's plan hasn't changed, so decide whether it should.") }}
+{% elif addon %}
+{{ ui.heading("A 1:1 add-on was refunded.") }}
+{{ ui.p("Stripe reports a full refund on add-on purchase " ~ reference ~ ". It's marked refunded and no longer counts toward commission. The " ~ sessions ~ " session(s) it granted are still in the learner's balance, so take back any that haven't been used.") }}
+{% elif outside %}
 {{ ui.heading("A refund was made outside Tauka.") }}
 {{ ui.p("The provider reports a refund on " ~ reference ~ ", but Tauka hasn't refunded this order, so its code or seat still works. Refund it from Refunds in admin, or check why it was issued.") }}
 {% else %}
