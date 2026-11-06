@@ -143,7 +143,10 @@ async def provision(
     # without one if an earlier provision was interrupted between the two
     # writes. Checking rather than upserting keeps this readable in the logs.
     created_student = False
-    if not _student_row_exists(user_id):
+    # An exchange partner signing in on the website's /login is not a learner: no
+    # student row (A2: never learner and partner of the same language; 2026-11-06).
+    is_partner = bool(existing) and existing.get("user_type") == "partner"
+    if not is_partner and not _student_row_exists(user_id):
         try:
             # NO `tier` KEY. The column default is the only thing that should
             # ever set an initial tier, and tauka-python's billing path owns it
@@ -210,7 +213,7 @@ async def provision(
         "profile_created": created_profile,
         "student_created": created_student,
         "already_provisioned": not created_profile and not created_student,
-        "user_type": _STUDENT,
+        "user_type": "partner" if is_partner else _STUDENT,
         "referral": referral,
         "consents_recorded": consents_recorded,
     }

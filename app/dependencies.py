@@ -56,6 +56,15 @@ def _verification_key(token: str) -> tuple[object, list[str]]:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Could not fetch signing keys",
             )
+        except jwt.PyJWKSetError:
+            # SUPABASE_URL publishes no signing keys: the token came from another
+            # Supabase (e.g. the website on the local stack, this service on .env,
+            # not .env.demo). Answer instead of crashing — an unhandled error here
+            # skips the CORS headers and the browser reports a misleading CORS block.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No signing keys at SUPABASE_URL; is this service on the same Supabase as the client?",
+            )
         if signing_key.algorithm_name != alg:
             raise jwt.InvalidAlgorithmError("token alg does not match its key")
         return signing_key.key, [alg]

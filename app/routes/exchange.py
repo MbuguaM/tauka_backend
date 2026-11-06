@@ -13,7 +13,7 @@ Ops / safeguarding / finance: `/exchange/admin/*`.
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Query, APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.dependencies import get_current_user
@@ -25,7 +25,7 @@ _STATUS = {"not_enabled": 403, "not_allowed": 403, "not_your_session": 403, "not
            "not_a_partner": 403, "removed": 403, "not_eligible": 409, "paused": 409, "allowance_used": 409,
            "no_partner": 409, "not_now": 409, "not_open": 409, "too_late": 409, "not_started": 409,
            "already_rated": 409, "not_due": 409, "learner_cannot_partner": 409, "not_in_pilot": 409,
-           "not_active": 409, "too_soon": 409, "not_your_partner": 409, "not_a_favourite": 409,
+           "not_active": 409, "too_soon": 409, "not_a_no_show": 409, "not_your_partner": 409, "not_a_favourite": 409,
            "no_room": 503, "rate_limited": 429, "not_found": 404}
 
 
@@ -56,6 +56,7 @@ class Join(BaseModel):
     first_name: Optional[str] = Field(None, max_length=120)
     age_confirmed: bool
     region: Optional[str] = Field(None, max_length=80)
+    country_code: Optional[str] = Field(None, pattern=r"^[A-Za-z]{2}$")  # §157
 
 
 class Profile(BaseModel):
@@ -64,6 +65,8 @@ class Profile(BaseModel):
     english_self: Optional[Level] = None
     interests: list[str] = Field(default_factory=list, max_length=10)
     low_data: Optional[bool] = None
+    region: Optional[str] = Field(None, max_length=80)
+    country_code: Optional[str] = Field(None, pattern=r"^([A-Za-z]{2})?$")  # §157; "" clears
 
 
 class Sample(BaseModel):
@@ -79,7 +82,8 @@ class Training(BaseModel):
 
 
 class Book(BaseModel):
-    slot_id: str = Field(..., pattern=r"^[0-9a-fA-F-]{36}$")
+    # §158: any half hour a partner is free. Old clients still send a catalogue id; it's ignored.
+    slot_id: Optional[str] = Field(None, pattern=r"^[0-9a-fA-F-]{36}$")
     at: str = Field(..., max_length=40)
     length_min: Literal[20, 30] = 30
     partner_id: Optional[str] = Field(None, pattern=r"^[0-9a-fA-F-]{36}$")
@@ -115,12 +119,27 @@ class Report(BaseModel):
     detail: Optional[str] = Field(None, max_length=1000)
 
 
+class JoinCall(BaseModel):
+    """Joining a call (not the partner sign-up `Join` above)."""
+    video: bool = False
+
+
 class Cancel(BaseModel):
     reason: Optional[str] = Field(None, max_length=300)
 
 
 class Now(BaseModel):
     side: Literal["learner", "partner"]
+    minutes: Optional[Literal[30, 60, 120]] = None                       # partner: how long they're free
+    partner_id: Optional[str] = Field(None, pattern=r"^[0-9a-fA-F-]{36}$")  # learner: a favourite
+    replaces: Optional[str] = Field(None, pattern=r"^[0-9a-fA-F-]{36}$")    # learner: the no-show session
+
+
+class Hours(BaseModel):
+    """§158: the hours of the week a partner is free, [weekday 0=Mon, hour 0-23], in `timezone`."""
+    hours: list[tuple[int, int]] = Field(default_factory=list, max_length=168)
+    timezone: str = Field(..., min_length=1, max_length=64)
+    weekly_cap: Optional[int] = Field(None, ge=1, le=14)
 
 
 class Practice(BaseModel):
@@ -183,13 +202,13 @@ async def partner(user_id: str = Depends(get_current_user)):
 
 @router.post("/partner/join")
 async def join(req: Join, user_id: str = Depends(get_current_user)):
-    return _run(svc.join_partner, user_id, req.first_name, req.age_confirmed, req.region)
+    return _run(svc.join_partner, user_id, req.first_name, req.age_confirmed, req.region, req.country_code)
 
 
 @router.post("/partner/profile")
 async def profile(req: Profile, user_id: str = Depends(get_current_user)):
     return _run(svc.set_profile, user_id, req.amharic_variety, req.variety_note, req.english_self, req.interests,
-                req.low_data)
+                req.low_data, req.region, req.country_code)
 
 
 @router.post("/partner/english-sample")
@@ -200,6 +219,17 @@ async def english_sample(req: Sample, user_id: str = Depends(get_current_user)):
 @router.get("/partner/slots")
 async def partner_slots(user_id: str = Depends(get_current_user)):
     return {"slots": svc.catalogue()}
+
+
+@router.get("/partner/hours")
+async def hour_hints(tz: Optional[str] = Query(None, max_length=64), user_id: str = Depends(get_current_user)):
+    """Every hour of the week in `tz` with the learners' time in each region (§158)."""
+    return svc.hour_hints(tz)
+
+
+@router.post("/partner/hours")
+async def hours(req: Hours, user_id: str = Depends(get_current_user)):
+    return _run(svc.set_hours, user_id, req.hours, req.timezone, req.weekly_cap)
 
 
 @router.post("/partner/availability")
@@ -250,8 +280,8 @@ async def respond(session_id: str, req: Respond, user_id: str = Depends(get_curr
 
 
 @router.post("/sessions/{session_id}/join")
-async def join_call(session_id: str, user_id: str = Depends(get_current_user)):
-    return await _arun(svc.join_call, user_id, session_id)
+async def join_call(session_id: str, req: Optional[JoinCall] = None, user_id: str = Depends(get_current_user)):
+    return await _arun(svc.join_call, user_id, session_id, None, bool(req and req.video))
 
 
 @router.post("/sessions/{session_id}/connect-failed")
@@ -293,7 +323,13 @@ async def cancel(session_id: str, req: Cancel, user_id: str = Depends(get_curren
 
 @router.post("/now")
 async def practise_now(req: Now, user_id: str = Depends(get_current_user)):
-    return _run(svc.practise_now, user_id, req.side)
+    return _run(svc.practise_now, user_id, req.side, None, req.minutes, req.partner_id, req.replaces)
+
+
+@router.get("/now/free")
+async def free_now(user_id: str = Depends(get_current_user)):
+    """How many partners are free to chat now, and which favourites (§158)."""
+    return svc.free_now(user_id)
 
 
 @router.get("/now")

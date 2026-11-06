@@ -6,8 +6,11 @@ Pinned:
 3. Activation needs conduct, training, a self-rated English level and availability;
    past capacity a partner is waitlisted.
 4. Eligibility (X-09): content progress and not Phase 0. Allowance by tier.
-5. Matching (A8): the slot in the learner's band, blocks, gender requirements,
-   English fit and rotation; a decline passes the request to the next partner.
+5. Matching (A8, §158): open hours in the partner's zone, any band; blocks, gender
+   requirements, English fit and rotation; the weekly cap; a decline passes on.
+   Bookable times are every free half hour, catalogue times marked as popular.
+5b. Chat now (§158): a partner's "free to chat" toggle, count-only for strangers,
+   favourites by name; a no-show is settled and replaced.
 6. The call: participants only, from 10 minutes before; an information gap shows
    each side its half; the partner's card is at their English level; the timer.
 7. Ratings: both -> completed; "didn't come" -> missed; phrases to deck / list.
@@ -60,8 +63,12 @@ def _db(flag="ready", **extra):
                            {"id": "tue18", "band": "americas", "anchor_timezone": "America/New_York",
                             "day_of_week": 1, "start_time": "18:00", "active": True}],
         "exchange_partner": [_partner(P1), _partner(P2, english_level="A2"), _partner(P3)],
-        "exchange_availability": [{"user_id": P1, "slot_id": "sat10"}, {"user_id": P2, "slot_id": "sat10"},
-                                  {"user_id": P3, "slot_id": "tue18"}],
+        # §158 open hours, in Addis (no zone set): SAT is Sat 13:00 there; p3 only Wed 02:00
+        # (the americas Tue 18:00 New York slot).
+        "exchange_partner_hour": [{"user_id": P1, "day_of_week": 5, "hour": 13},
+                                  {"user_id": P2, "day_of_week": 5, "hour": 13},
+                                  {"user_id": P3, "day_of_week": 2, "hour": 2}],
+        "exchange_availability": [],
         "exchange_session": [], "exchange_rating": [], "exchange_reward": [], "exchange_block": [],
         "exchange_favourite": [], "exchange_queue": [], "exchange_phrase": [], "exchange_message_flag": [],
         "peer_block": [], "gender_preference": [], "concern_report": [], "consent_record": [],
@@ -124,6 +131,18 @@ def test_join(db):
         ex.join_partner("other", "X", False, None)
 
 
+# 2b §157: the country is stored upper-case, validated, and can be added later.
+def test_join_country(db):
+    st = ex.join_partner("newp", "Selam", True, "Addis Ababa", "et")
+    assert st["partner"]["country_code"] == "ET" and st["partner"]["region"] == "Addis Ababa"
+    with pytest.raises(ExchangeRefused, match="bad_value"):
+        ex.join_partner("other", "X", True, None, "ETH")
+    st = ex.set_profile("newp", "standard", None, None, [], region="Bahir Dar", country_code="")
+    assert st["partner"]["country_code"] is None and st["partner"]["region"] == "Bahir Dar"
+    st = ex.set_profile("newp", "standard", None, None, [], country_code="KE")
+    assert st["partner"]["country_code"] == "KE" and st["partner"]["region"] == "Bahir Dar"
+
+
 # 3
 def test_activation_and_waitlist(db):
     ex.join_partner("newp", "Selam", True, None)
@@ -165,17 +184,17 @@ def test_eligibility_and_allowance(db):
 # 5
 @pytest.mark.asyncio
 async def test_matching_and_decline_passes_on(db):
-    # Band: p3 offers only an americas slot. Ranking: p1 then p2 by id (English fit is moot for an English speaker).
-    assert ex.candidates(L, "sat10", SAT, 30, NOW) == [P1, P2]
+    # Hours: p3 isn't free then. Ranking: p1 then p2 by id (English fit is moot for an English speaker).
+    assert ex.candidates(L, SAT, 30, NOW) == [P1, P2]
     db.rows["user_profiles"][0]["first_language"] = "he"
-    assert ex.candidates(L, "sat10", SAT, 30, NOW)[0] == P2          # A2 partner first for a non-English speaker
+    assert ex.candidates(L, SAT, 30, NOW)[0] == P2          # A2 partner first for a non-English speaker
     db.rows["user_profiles"][0]["first_language"] = "en"
     db.rows["exchange_block"].append({"blocker_id": P1, "blocked_id": L})
-    assert ex.candidates(L, "sat10", SAT, 30, NOW) == [P2]
+    assert ex.candidates(L, SAT, 30, NOW) == [P2]
     db.rows["exchange_block"] = []
     db.rows["gender_preference"] = [{"user_id": L, "gender": "woman", "same_gender_exchange": "requirement"},
                                     {"user_id": P1, "gender": "woman"}, {"user_id": P2, "gender": "man"}]
-    assert ex.candidates(L, "sat10", SAT, 30, NOW) == [P1]
+    assert ex.candidates(L, SAT, 30, NOW) == [P1]
     db.rows["gender_preference"] = []
     out = ex.book(L, "sat10", SAT.isoformat(), 30, now=NOW)
     first = db.rows["exchange_session"][0]
@@ -296,7 +315,7 @@ def test_late_cancellations_pause(db):
     ex.cancel(P1, b["id"], now=NOW)
     p = next(p for p in db.rows["exchange_partner"] if p["user_id"] == P1)
     assert p["paused_until"]
-    assert P1 not in ex.candidates(L, "sat10", SAT, 30, NOW)
+    assert P1 not in ex.candidates(L, SAT, 30, NOW)
     early = _booked(db, partner=P2, at=NOW + timedelta(days=3))
     assert not ex.cancel(L, early["id"], now=NOW)["late"]
 
@@ -354,3 +373,104 @@ def test_attended(db):
 def test_mask_contacts():
     assert ex.mask_contacts("my wa.me/251911 please")[1]
     assert not ex.mask_contacts("I studied for 3 hours on 12 May")[1]
+
+
+# 3b §158: open hours replace slot picks; old clients' slot ids become hours.
+def test_hours(db):
+    st = ex.set_hours(P1, [[0, 19], [0, 20], [5, 13]], "Europe/London", 5)
+    assert st["hours"] == [[0, 19], [0, 20], [5, 13]] and st["timezone"] == "Europe/London" and st["weekly_cap"] == 5
+    assert st["availability"] == []                  # sat10 is 10:00 London, not inside those hours
+    assert ex.set_hours(P1, [[5, 10]], "Europe/London")["availability"] == ["sat10"]   # for §142 clients
+    with pytest.raises(ExchangeRefused, match="bad_timezone"):
+        ex.set_hours(P1, [], "Mars/Olympus")
+    with pytest.raises(ExchangeRefused, match="bad_value"):
+        ex.set_hours(P1, [[7, 0]], "Europe/London")
+    with pytest.raises(ExchangeRefused, match="bad_value"):
+        ex.set_hours(P1, [], "Europe/London", 20)
+    st = ex.set_availability(P2, ["tue18"])          # Tue 18:00 New York = Wed 02:00 Addis
+    assert st["hours"] == [[2, 2]]
+
+
+@pytest.mark.asyncio
+async def test_open_hours_matching(db):
+    # Any half hour inside marked hours books, not only catalogue times.
+    assert ex.candidates(L, SAT + timedelta(minutes=30), 30, NOW) == [P1, P2]   # 13:30-14:00, inside 13:00
+    off = SAT + timedelta(hours=1)                   # 14:00 Addis: nobody marked that hour yet
+    assert ex.candidates(L, off, 30, NOW) == []
+    db.rows["exchange_partner_hour"].append({"user_id": P1, "day_of_week": 5, "hour": 14})
+    assert ex.candidates(L, off, 30, NOW) == [P1]
+    out = ex.book(L, None, off.isoformat(), 30, now=NOW)
+    assert out["status"] == "requested" and db.rows["exchange_session"][0]["slot_id"] is None
+    # A popular (catalogue) time records its slot.
+    ex.book(L, None, SAT.isoformat(), 30, now=NOW)
+    assert db.rows["exchange_session"][1]["slot_id"] == "sat10"
+    with pytest.raises(ExchangeRefused, match="bad_time"):
+        ex.book(L, None, (SAT + timedelta(minutes=10)).isoformat(), 30, now=NOW)
+    # Bookable: every free half hour, the catalogue time marked.
+    slots = ex.bookable(L, NOW)["slots"]
+    sat = next(x for x in slots if x["at"] == SAT.isoformat())
+    assert sat["suggested"] and sat["slot_id"] == "sat10"
+
+
+def test_weekly_cap(db):
+    next(p for p in db.rows["exchange_partner"] if p["user_id"] == P1)["weekly_cap"] = 1
+    _booked(db, partner=P1, at=SAT - timedelta(days=1), status="booked")     # same week, Friday
+    assert ex.candidates(L, SAT, 30, NOW) == [P2]
+    # A chat-now session doesn't count toward it.
+    db.rows["exchange_session"][0]["kind"] = "instant"
+    assert P1 in ex.candidates(L, SAT, 30, NOW)
+
+
+def test_chat_now(db):
+    db.rows["feature_flag"].append({"key": "exchange_practise_now", "status": "ready"})
+    assert ex.free_now(L, NOW) == {"enabled": True, "free": 0, "favourites": []}
+    out = ex.practise_now(P1, "partner", NOW, minutes=60)
+    assert out["status"] == "waiting" and ex.partner_state(P1, NOW)["free_until"]
+    with pytest.raises(ExchangeRefused, match="bad_value"):
+        ex.practise_now(P2, "partner", NOW, minutes=45)
+    assert ex.free_now(L, NOW + timedelta(minutes=30))["free"] == 1          # still free half an hour later
+    assert ex.free_now(L, NOW + timedelta(minutes=61))["free"] == 0          # the switch ran out
+    # Strangers are a count; a favourite who is free is named.
+    db.rows["exchange_favourite"].append({"learner_id": L, "partner_id": P1})
+    assert ex.free_now(L, NOW)["favourites"] == [{"id": P1, "name": "Abeba"}]
+    # Asking a free favourite pairs at once; asking a stranger is refused.
+    with pytest.raises(ExchangeRefused, match="not_a_favourite"):
+        ex.practise_now(L, "learner", NOW, partner_id=P2)
+    out = ex.practise_now(L, "learner", NOW, partner_id=P1)
+    assert out["status"] == "paired"
+    s = next(r for r in db.rows["exchange_session"] if r["id"] == out["session_id"])
+    assert s["kind"] == "instant" and s["length_min"] == 20 and s["partner_id"] == P1
+    assert ex.now_status(P1, NOW)["status"] == "paired"
+    # A favourite who isn't free: nothing queued.
+    assert ex.practise_now(L, "learner", NOW, partner_id=P1)["status"] == "not_free"
+
+
+@pytest.mark.asyncio
+async def test_no_show_replacement(db):
+    db.rows["feature_flag"].append({"key": "exchange_practise_now", "status": "ready"})
+    s = _booked(db, at=SAT, learner_joined_at=SAT.isoformat())
+    with pytest.raises(ExchangeRefused, match="not_a_no_show"):
+        ex.practise_now(L, "learner", SAT + timedelta(minutes=2), replaces=s["id"])   # too early
+    ex.practise_now(P2, "partner", SAT, minutes=30)
+    out = ex.practise_now(L, "learner", SAT + timedelta(minutes=6), replaces=s["id"])
+    assert out["status"] == "paired"
+    rows = {r["id"]: r for r in db.rows["exchange_session"]}
+    assert rows[s["id"]]["status"] == "missed" and rows[s["id"]]["missed_by"] == P1
+    new = rows[out["session_id"]]
+    assert new["replaces_id"] == s["id"] and new["partner_id"] == P2
+    # The missed one stops counting, the replacement counts: one exchange used.
+    assert ex.allowance(L, SAT + timedelta(minutes=6))["used"] == 1
+    # A chat-now partner who never joins isn't penalised.
+    with patch("app.services.calling_service.create_daily_room", new=AsyncMock(return_value=None)):
+        await ex.hourly(SAT + timedelta(days=2))
+    assert next(r for r in db.rows["exchange_session"] if r["id"] == new["id"])["status"] == "cancelled"
+
+
+def test_hour_hints(db):
+    out = ex.hour_hints("Africa/Addis_Ababa", NOW)
+    assert out["timezone"] == "Africa/Addis_Ababa" and len(out["cells"]) == 168
+    sat13 = next(c for c in out["cells"] if c["day"] == 5 and c["hour"] == 13)
+    europe = next(r for r in sat13["regions"] if r["band"] == "europe")
+    assert europe["time"] == "10:00" and europe["likely"] and sat13["popular"] == ["europe"]
+    # A zone that isn't one falls back to Addis Ababa rather than failing.
+    assert ex.hour_hints("Nowhere/Else", NOW)["timezone"] == "Africa/Addis_Ababa"

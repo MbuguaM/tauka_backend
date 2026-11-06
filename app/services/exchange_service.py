@@ -22,8 +22,9 @@ Decisions this follows (features-addendum-implementation-plan.md §2a):
   X-13  cards come from app.peer_task: learner side by lesson, partner side by
         English level.
 
-Matching for a scheduled booking (A8), in order: the partner offers that
-catalogue slot in the learner's band; gender requirements on either side;
+Matching for a scheduled booking (A8), in order: the partner marked that hour
+free (§158: open hours in their own zone, any band; the slot catalogue is only
+"popular times") and is under their weekly cap; gender requirements on either side;
 English fit (a learner whose first language isn't English is steered to
 partners at A2/B1); reliability (paused partners never, recent misses last);
 rotation (new pairs for a learner's first four exchanges, then favourites
@@ -33,6 +34,7 @@ first); 5+ well-rated sessions first; then whoever has had fewest sessions.
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.core.flags import is_ready
 from app.services import hierarchy_service as hs
@@ -55,6 +57,13 @@ CONNECT_TRIES = 2                         # A7: two failed connects -> reschedul
 REWARD_DONE_SHARE = 0.8                   # A9: 80% of the length counts as done
 INSTANT_WAIT = timedelta(minutes=3)       # A8 practise now: within 3 minutes
 BOOK_AHEAD = timedelta(days=14)
+# §158 open hours and "free to chat now" (2026-11-06)
+DEFAULT_TZ = "Africa/Addis_Ababa"          # where a partner's zone isn't known yet
+STEP = timedelta(minutes=30)               # bookable starts: on the hour and the half hour
+FREE_MINUTES = (30, 60, 120)               # how long a partner's "free to chat now" lasts
+INSTANT_LENGTH = 20
+NO_SHOW_GRACE = timedelta(minutes=5)       # then the learner may find someone free now
+WEEKLY_CAP_RANGE = (1, 14)
 ENGLISH_LEVELS = ("A2", "B1", "B2", "C1")
 LOW_ENGLISH = ("A2", "B1")
 REPORTS_TO_PAUSE = 2
@@ -72,7 +81,7 @@ DEFAULTS = {
     "exchange.reward_cap_month": 2,
     "exchange.reward_amount_minor": 0,
     "exchange.reliability_misses": 2,
-    "exchange.instant_band": "ea_gulf",
+    "exchange.instant_band": "ea_gulf",       # unused since §158 (chat now is open to every band)
     "exchange.tutor_invite": {"sessions": 20, "rating": 4.5},
 }
 
@@ -311,13 +320,17 @@ def _apply_reliability(user_id: str, now: datetime) -> None:
 
 # ── partner onboarding (A4) ─────────────────────────────────────────────────
 
-def join_partner(user_id: str, first_name: str | None, age_confirmed: bool, region: str | None) -> dict:
+def join_partner(user_id: str, first_name: str | None, age_confirmed: bool, region: str | None,
+                 country_code: str | None = None) -> dict:
     """X-05: the web signed the person up; make them a partner. A new account
     becomes user_type 'partner'; a tutor stays a tutor and gains the role; a
     learner of Amharic can't (A2)."""
     _require_on()
     if not age_confirmed:
         raise ExchangeRefused("age_required")
+    country = (country_code or "").strip().upper() or None
+    if country and not re.fullmatch(r"[A-Z]{2}", country):
+        raise ExchangeRefused("bad_value")
     prof = (_t("user_profiles").select("id, user_type, age_confirmed_at").eq("id", user_id).limit(1)
             .execute()).data or []
     now = _now().isoformat()
@@ -334,7 +347,7 @@ def join_partner(user_id: str, first_name: str | None, age_confirmed: bool, regi
             _t("user_profiles").update({"age_confirmed_at": now}).eq("id", user_id).execute()
     if not _partner(user_id):
         _t("exchange_partner").insert({"user_id": user_id, "region": (region or "").strip()[:80] or None,
-                                       "status": "onboarding"}).execute()
+                                       "country_code": country, "status": "onboarding"}).execute()
     return partner_state(user_id)
 
 
@@ -348,16 +361,26 @@ def _require_partner(user_id: str) -> dict:
 
 
 def set_profile(user_id: str, amharic_variety: str, variety_note: str | None, english_self: str | None,
-                interests: list[str] | None, low_data: bool | None = None) -> dict:
+                interests: list[str] | None, low_data: bool | None = None,
+                region: str | None = None, country_code: str | None = None) -> dict:
+    """`region` / `country_code`: None leaves them as they are (§157: partners who
+    joined before the modal asked for a country add it here)."""
     _require_on()
     _require_partner(user_id)
     if amharic_variety not in ("standard", "regional") or (english_self and english_self not in ENGLISH_LEVELS):
+        raise ExchangeRefused("bad_value")
+    country = (country_code or "").strip().upper()
+    if country and not re.fullmatch(r"[A-Z]{2}", country):
         raise ExchangeRefused("bad_value")
     upd = {"amharic_variety": amharic_variety, "variety_note": (variety_note or "").strip()[:120] or None,
            "english_self": english_self, "interests": [str(i).strip()[:40] for i in (interests or [])][:10],
            "updated_at": _now().isoformat()}
     if low_data is not None:
         upd["low_data"] = bool(low_data)
+    if region is not None:
+        upd["region"] = region.strip()[:80] or None
+    if country_code is not None:
+        upd["country_code"] = country or None
     _t("exchange_partner").update(upd).eq("user_id", user_id).execute()
     return partner_state(user_id)
 
@@ -374,19 +397,134 @@ def set_english_sample(user_id: str, path: str) -> dict:
     return partner_state(user_id)
 
 
-def set_availability(user_id: str, slot_ids: list[str]) -> dict:
+# ── open hours (§158) ───────────────────────────────────────────────────────
+#
+# A partner marks hours of the week (0 = Monday, hour 0-23) in their own zone.
+# Stored as wall-clock cells, so clock changes never shift them: an instant is
+# converted into the partner's zone when someone books.
+
+def _zone(name: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(name or DEFAULT_TZ)
+    except Exception:  # noqa: BLE001
+        return ZoneInfo(DEFAULT_TZ)
+
+
+def _valid_zone(name: str | None) -> bool:
+    if not name or len(name) > 64:
+        return False
+    try:
+        ZoneInfo(name)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _cell(at: datetime, zone: ZoneInfo) -> tuple[int, int]:
+    local = at.astimezone(zone)
+    return local.weekday(), local.hour
+
+
+def _covers(hours: set, zone: ZoneInfo, at: datetime, length_min: int) -> bool:
+    """Every hour the session touches is marked (a session is at most 30 minutes)."""
+    end = at + timedelta(minutes=length_min) - timedelta(minutes=1)
+    return _cell(at, zone) in hours and _cell(end, zone) in hours
+
+
+def _week(at: datetime, zone: ZoneInfo):
+    local = at.astimezone(zone)
+    return local.date() - timedelta(days=local.weekday())
+
+
+def _hours(user_id: str) -> set[tuple[int, int]]:
+    return {(int(r["day_of_week"]), int(r["hour"])) for r in (_t("exchange_partner_hour").select("day_of_week, hour")
+            .eq("user_id", user_id).execute()).data or []}
+
+
+def _likely(day: int, hour: int, band: str) -> bool:
+    """When learners are usually free, in their own time (enrolment playbook, Scheduling):
+    weekday evenings, lunchtime in East Africa, weekends late morning to evening. An hour
+    wider either side, because it's only a hint on the partner's Times page."""
+    if day >= 5:
+        return 10 <= hour < 21
+    return 18 <= hour < 22 or (band == "ea_gulf" and 12 <= hour < 14)
+
+
+def hour_hints(tz: str | None, now: datetime | None = None) -> dict:
+    """For the Times page (web and app): every hour of the week in `tz`, with the learners'
+    local time in each region, whether they're likely free, and the catalogue's popular
+    times. One rule for both clients; the app has no time-zone database."""
+    from app.services.slot_service import ANCHOR
+    zone = _zone(tz if _valid_zone(tz) else None)
+    now = now or _now()
+    start = now.replace(minute=0, second=0, microsecond=0)
+    cells: dict[tuple[int, int], datetime] = {}
+    for k in range(8 * 48):                      # half hours, for zones on a half-hour offset
+        t = start + timedelta(minutes=30 * k)
+        if t.astimezone(zone).minute == 0:
+            cells.setdefault(_cell(t, zone), t)
+    popular: dict[tuple[int, int], set] = {}
+    for c in catalogue(now):
+        popular.setdefault(_cell(_ts(c["next_at"]), zone), set()).add(c["band"])
+    out = []
+    for (d, h), at in sorted(cells.items()):
+        regions = []
+        for band, z in ANCHOR.items():
+            loc = at.astimezone(ZoneInfo(z))
+            regions.append({"band": band, "day": loc.weekday(), "time": loc.strftime("%H:%M"),
+                            "likely": _likely(loc.weekday(), loc.hour, band)})
+        out.append({"day": d, "hour": h, "regions": regions, "likely": sum(r["likely"] for r in regions),
+                    "popular": sorted(popular.get((d, h), set()))})
+    return {"timezone": zone.key, "cells": out}
+
+
+def set_hours(user_id: str, hours: list, tz: str, weekly_cap: int | None = None) -> dict:
+    """Replace the partner's open hours (§158), in `tz`, and optionally their weekly cap."""
     _require_on()
     _require_partner(user_id)
-    slot_ids = sorted(set(slot_ids or []))[:21]
-    if slot_ids:
-        known = {s["id"] for s in (_t("slot_catalogue").select("id, active").in_("id", slot_ids).execute()).data or []
-                 if s.get("active")}
-        if set(slot_ids) - known:
-            raise ExchangeRefused("unknown_slot")
+    if not _valid_zone(tz):
+        raise ExchangeRefused("bad_timezone")
+    cells = set()
+    for h in hours or []:
+        try:
+            d, hr = int(h[0]), int(h[1])
+        except (TypeError, ValueError, IndexError) as exc:
+            raise ExchangeRefused("bad_value") from exc
+        if not (0 <= d <= 6 and 0 <= hr <= 23):
+            raise ExchangeRefused("bad_value")
+        cells.add((d, hr))
+    upd = {"timezone": tz, "updated_at": _now().isoformat()}
+    if weekly_cap is not None:
+        if not WEEKLY_CAP_RANGE[0] <= int(weekly_cap) <= WEEKLY_CAP_RANGE[1]:
+            raise ExchangeRefused("bad_value")
+        upd["weekly_cap"] = int(weekly_cap)
+    _t("exchange_partner").update(upd).eq("user_id", user_id).execute()
+    _t("exchange_partner_hour").delete().eq("user_id", user_id).execute()
+    if cells:
+        _t("exchange_partner_hour").insert([{"user_id": user_id, "day_of_week": d, "hour": hr}
+                                            for d, hr in sorted(cells)]).execute()
+    # §142's slot picks are superseded; don't leave two answers to "when are you free".
     _t("exchange_availability").delete().eq("user_id", user_id).execute()
-    if slot_ids:
-        _t("exchange_availability").insert([{"user_id": user_id, "slot_id": s} for s in slot_ids]).execute()
     return partner_state(user_id)
+
+
+def set_availability(user_id: str, slot_ids: list[str]) -> dict:
+    """§142 clients send catalogue slot ids. Each becomes the hour it starts in,
+    in the partner's zone (§158). Replaces their hours, as it always replaced the set."""
+    from app.services.slot_service import next_at
+    _require_on()
+    p = _require_partner(user_id)
+    slot_ids = sorted(set(slot_ids or []))[:21]
+    rows = []
+    if slot_ids:
+        rows = [r for r in (_t("slot_catalogue").select("id, anchor_timezone, day_of_week, start_time, active")
+                .in_("id", slot_ids).execute()).data or [] if r.get("active")]
+        if {r["id"] for r in rows} != set(slot_ids):
+            raise ExchangeRefused("unknown_slot")
+    zone = _zone(p.get("timezone"))
+    now = _now()
+    cells = sorted({_cell(next_at(r, now), zone) for r in rows})
+    return set_hours(user_id, cells, p.get("timezone") or DEFAULT_TZ)
 
 
 def _record_consent(user_id: str, purpose: str, granted: bool, version: str = CONDUCT_VERSION) -> None:
@@ -452,7 +590,7 @@ def activate(user_id: str, now: datetime | None = None) -> dict:
         return partner_state(user_id)
     missing = [k for k, ok in (("conduct", p.get("conduct_agreed_at")), ("training", p.get("trained_at")),
                                ("english", p.get("english_self")),
-                               ("availability", _availability(user_id))) if not ok]
+                               ("availability", _hours(user_id))) if not ok]
     if missing:
         raise ExchangeRefused("incomplete:" + ",".join(missing))
     status = "active" if _active_count() < capacity(now) else "waitlisted"
@@ -465,9 +603,13 @@ def activate(user_id: str, now: datetime | None = None) -> dict:
     return partner_state(user_id)
 
 
-def _availability(user_id: str) -> list[str]:
-    return [a["slot_id"] for a in (_t("exchange_availability").select("slot_id").eq("user_id", user_id)
-            .execute()).data or []]
+def _availability(user_id: str, p: dict | None = None) -> list[str]:
+    """For §142 clients: the catalogue slots the partner's open hours cover."""
+    hours = _hours(user_id)
+    if not hours:
+        return []
+    zone = _zone((p or _partner(user_id) or {}).get("timezone"))
+    return [c["id"] for c in catalogue() if _covers(hours, zone, _ts(c["next_at"]), DEFAULT_LENGTH)]
 
 
 def catalogue(now: datetime | None = None) -> list[dict]:
@@ -517,10 +659,15 @@ def partner_state(user_id: str, now: datetime | None = None) -> dict:
     return {
         "enabled": True,
         "partner": {k: p.get(k) for k in ("status", "status_reason", "amharic_variety", "variety_note", "english_self",
-                                          "english_level", "interests", "low_data", "region", "verified_at",
+                                          "english_level", "interests", "low_data", "region", "country_code", "verified_at",
                                           "conduct_agreed_at", "trained_at", "activated_at", "paused_until")},
         "has_english_sample": bool(p.get("english_sample_path")),
-        "availability": _availability(user_id),
+        "availability": _availability(user_id, p),
+        "hours": [list(c) for c in sorted(_hours(user_id))],
+        "timezone": p.get("timezone"),
+        "weekly_cap": int(p.get("weekly_cap") or 3),
+        "free_until": _free_until(user_id, now),
+        "chat_now": is_ready("exchange_practise_now"),
         "waitlist": {"position": pos, "weeks": estimated_wait_weeks(pos, now)} if pos else None,
         "sessions": sessions,
         "rewards": sorted(rewards, key=lambda r: str(r["created_at"]), reverse=True),
@@ -569,7 +716,8 @@ def learner_state(student_id: str, now: datetime | None = None) -> dict:
             "paused_until": pause.isoformat() if pause else None,
             "sessions": _sessions_for(student_id, "learner_id", now),
             "favourites": [{"id": f, "name": _first_name(names.get(f))} for f in favs],
-            "practise_now": is_ready("exchange_practise_now") and _band(student_id) == config("exchange.instant_band")}
+            # §158: open to every band (it was a pilot in exchange.instant_band).
+            "practise_now": is_ready("exchange_practise_now")}
 
 
 def _active_partners() -> dict[str, dict]:
@@ -611,18 +759,20 @@ def match_context(student_id: str, now: datetime) -> dict:
     candidates; reading per slot made GET /exchange/slots take a minute)."""
     pool = _active_partners()
     ids = list(pool)
-    avail: dict[str, set] = {}
+    hours: dict[str, set] = {}
     if ids:
-        for a in (_t("exchange_availability").select("user_id, slot_id").in_("user_id", ids).execute()).data or []:
-            avail.setdefault(a["slot_id"], set()).add(a["user_id"])
-    slots = {r["id"]: r for r in (_t("slot_catalogue").select("id, band, active").execute()).data or []}
+        for a in (_t("exchange_partner_hour").select("user_id, day_of_week, hour").in_("user_id", ids)
+                  .execute()).data or []:
+            hours.setdefault(a["user_id"], set()).add((int(a["day_of_week"]), int(a["hour"])))
+    zones = {pid: _zone(p.get("timezone")) for pid, p in pool.items()}
     # Never `in_(col, ["-"])` for an empty list: "-" isn't a uuid, and
     # PostgREST rejects the whole query (found 2026-10-20 against the real schema).
-    sessions = (_t("exchange_session").select("id, partner_id, status, scheduled_at, missed_by, late_cancel, cancelled_by")
+    sessions = (_t("exchange_session").select("id, partner_id, kind, status, scheduled_at, missed_by, late_cancel, cancelled_by")
                 .in_("partner_id", ids).gte("scheduled_at", (now - MISS_WINDOW).isoformat())
                 .execute()).data or [] if ids else []
     miss: dict[str, int] = {}
     busy: dict[str, list[datetime]] = {}
+    weeks: dict[str, dict] = {}
     for r in sessions:
         pid = r["partner_id"]
         if (r["status"] == "missed" and r.get("missed_by") == pid) or \
@@ -630,72 +780,112 @@ def match_context(student_id: str, now: datetime) -> dict:
             miss[pid] = miss.get(pid, 0) + 1
         if r["status"] in ("requested", "booked"):
             busy.setdefault(pid, []).append(_ts(r["scheduled_at"]))
+        # The weekly cap counts booked sessions, never chats the partner switched on.
+        if (r.get("kind") or "scheduled") == "scheduled" and r["status"] in ("requested", "booked", "completed") \
+                and pid in zones:
+            wk = _week(_ts(r["scheduled_at"]), zones[pid])
+            weeks.setdefault(pid, {})[wk] = weeks.get(pid, {}).get(wk, 0) + 1
     me = _profiles([student_id]).get(student_id) or {}
     favs = {f["partner_id"] for f in (_t("exchange_favourite").select("partner_id").eq("learner_id", student_id)
             .execute()).data or []}
-    return {"band": _band(student_id), "pool": pool, "avail": avail, "slots": slots, "miss": miss, "busy": busy,
+    return {"band": _band(student_id), "pool": pool, "hours": hours, "zones": zones, "weeks": weeks,
+            "miss": miss, "busy": busy,
             "blocked": _blocked_pairs(student_id), "genders": _genders(ids + [student_id]),
             "low_english": (me.get("first_language") or "en") != "en", "pairs": _pair_counts(student_id),
             "favs": favs, "scores": _partner_scores(ids)}
 
 
-def candidates(student_id: str, slot_id: str, at: datetime, length_min: int, now: datetime,
-               only: str | None = None, ctx: dict | None = None) -> list[str]:
-    """Partners for this slot and time, best first (the A8 order in the docstring)."""
-    c = ctx or match_context(student_id, now)
-    slot = c["slots"].get(slot_id)
-    if not slot or not slot.get("active") or (c["band"] and slot.get("band") != c["band"]):
-        return []
+def _base_ok(c: dict, student_id: str, pid: str, now: datetime, only: str | None = None) -> bool:
+    """The checks that don't depend on the time: active, not blocked or paused, gender."""
     pool = c["pool"]
+    return (pid in pool and pid != student_id and pid not in c["blocked"]
+            and not (pool[pid].get("paused_until") and _ts(pool[pid]["paused_until"]) > now)
+            and (only is None or pid == only)
+            and _gender_ok(c["genders"], student_id, pid))
+
+
+def _not_busy(c: dict, pid: str, at: datetime, length_min: int) -> bool:
     lo, hi = at - timedelta(minutes=45), at + timedelta(minutes=length_min + 15)
-    ids = [pid for pid in c["avail"].get(slot_id, set())
-           if pid in pool and pid != student_id and pid not in c["blocked"]
-           and not (pool[pid].get("paused_until") and _ts(pool[pid]["paused_until"]) > now)
-           and (only is None or pid == only)
-           and _gender_ok(c["genders"], student_id, pid)
-           and not any(lo <= t <= hi for t in c["busy"].get(pid, []))]
+    return not any(lo <= t <= hi for t in c["busy"].get(pid, []))
+
+
+def _time_ok(c: dict, pid: str, at: datetime, length_min: int) -> bool:
+    """Free at that time: marked the hours, under the weekly cap, nothing else booked."""
+    zone = c["zones"][pid]
+    cap = int(c["pool"][pid].get("weekly_cap") or 3)
+    return (_covers(c["hours"].get(pid, set()), zone, at, length_min)
+            and c["weeks"].get(pid, {}).get(_week(at, zone), 0) < cap
+            and _not_busy(c, pid, at, length_min))
+
+
+def _rank(c: dict, pid: str):
+    p = c["pool"][pid]
+    level = p.get("english_level") or p.get("english_self")
+    english_fit = 0 if (not c["low_english"] or level in LOW_ENGLISH) else 1
     first_four = sum(c["pairs"].values()) < ROTATION_SESSIONS
+    new_pair = 0 if (c["pairs"].get(pid, 0) == 0) else 1
+    rotation = new_pair if first_four else (0 if pid in c["favs"] else 1)
+    n, avg = c["scores"].get(pid, (0, 0.0))
+    priority = 0 if (n >= PRIORITY_SESSIONS and avg >= PRIORITY_RATING) else 1
+    return (english_fit, c["miss"].get(pid, 0), rotation, priority, n, pid)
 
-    def rank(pid: str):
-        p = pool[pid]
-        level = p.get("english_level") or p.get("english_self")
-        english_fit = 0 if (not c["low_english"] or level in LOW_ENGLISH) else 1
-        new_pair = 0 if (c["pairs"].get(pid, 0) == 0) else 1
-        rotation = new_pair if first_four else (0 if pid in c["favs"] else 1)
-        n, avg = c["scores"].get(pid, (0, 0.0))
-        priority = 0 if (n >= PRIORITY_SESSIONS and avg >= PRIORITY_RATING) else 1
-        return (english_fit, c["miss"].get(pid, 0), rotation, priority, n, pid)
 
-    return sorted(ids, key=rank)
+def candidates(student_id: str, at: datetime, length_min: int, now: datetime,
+               only: str | None = None, ctx: dict | None = None) -> list[str]:
+    """Partners free at this time, best first (the A8 order in the docstring)."""
+    c = ctx or match_context(student_id, now)
+    ids = [pid for pid in c["pool"] if _base_ok(c, student_id, pid, now, only) and _time_ok(c, pid, at, length_min)]
+    return sorted(ids, key=lambda pid: _rank(c, pid))
+
+
+def _popular(band: str | None, now: datetime, until: datetime) -> dict[datetime, str]:
+    """Catalogue times in the learner's band (all bands if unknown), as instants -> slot id.
+    Shown as "popular times"; nothing is limited to them (§158)."""
+    from app.services.slot_service import next_at
+    out: dict[datetime, str] = {}
+    for c in (_t("slot_catalogue").select("id, band, anchor_timezone, day_of_week, start_time, active")
+              .eq("active", True).execute()).data or []:
+        if band and c.get("band") != band:
+            continue
+        at = next_at(c, now)
+        while at <= until:
+            out[at] = c["id"]
+            at = next_at(c, at + timedelta(minutes=1))
+    return out
+
+
+def _first_start(now: datetime) -> datetime:
+    t = (now + timedelta(hours=2)).replace(second=0, microsecond=0)
+    if t.minute % 30:
+        t += timedelta(minutes=30 - t.minute % 30)
+    return t
 
 
 def bookable(student_id: str, now: datetime | None = None) -> dict:
-    """The slots in the learner's band with at least one partner free, next 14 days."""
-    from app.services.slot_service import next_at
+    """Every half hour in the next 14 days with at least one partner free (§158).
+    `suggested` marks the catalogue's popular times in the learner's band."""
     _require_on()
     now = now or _now()
     if not eligible(student_id):
         raise ExchangeRefused("not_eligible")
     ctx = match_context(student_id, now)
-    slots = (_t("slot_catalogue").select("id, band, anchor_timezone, day_of_week, start_time, active")
-             .eq("active", True).execute()).data or []
+    base = [pid for pid in ctx["pool"] if _base_ok(ctx, student_id, pid, now)]
+    popular = _popular(ctx["band"], now, now + BOOK_AHEAD)
     out = []
-    for s in slots:
-        if ctx["band"] and s.get("band") != ctx["band"]:
-            continue
-        at = next_at(s, now + timedelta(hours=2))
-        for _ in range(2):          # this week's and next week's occurrence
-            if at - now <= BOOK_AHEAD:
-                n = len(candidates(student_id, s["id"], at, DEFAULT_LENGTH, now, ctx=ctx))
-                if n:
-                    out.append({"slot_id": s["id"], "at": at.isoformat(), "partners": n})
-            at = at + timedelta(days=7)
-    return {"slots": sorted(out, key=lambda r: r["at"]), "allowance": allowance(student_id, now)}
+    t = _first_start(now)
+    while t - now <= BOOK_AHEAD:
+        n = sum(1 for pid in base if _time_ok(ctx, pid, t, DEFAULT_LENGTH))
+        if n:
+            out.append({"at": t.isoformat(), "partners": n, "slot_id": popular.get(t), "suggested": t in popular})
+        t += STEP
+    return {"slots": out, "allowance": allowance(student_id, now)}
 
 
-def book(student_id: str, slot_id: str, at_iso: str, length_min: int = DEFAULT_LENGTH,
+def book(student_id: str, slot_id: str | None, at_iso: str, length_min: int = DEFAULT_LENGTH,
          partner_id: str | None = None, now: datetime | None = None) -> dict:
-    """A8 scheduled booking: the best partner gets the request and 12 hours to answer."""
+    """A8 scheduled booking: the best partner gets the request and 12 hours to answer.
+    Any half hour a partner is free (§158). `slot_id` from the client is ignored: the
+    session records the catalogue slot only when the time is one of the popular ones."""
     _require_on()
     now = now or _now()
     if length_min not in LENGTHS:
@@ -712,9 +902,12 @@ def book(student_id: str, slot_id: str, at_iso: str, length_min: int = DEFAULT_L
     if partner_id and partner_id not in {f["partner_id"] for f in (_t("exchange_favourite").select("partner_id")
                                          .eq("learner_id", student_id).execute()).data or []}:
         raise ExchangeRefused("not_a_favourite")
-    picks = candidates(student_id, slot_id, at, length_min, now, only=partner_id)
+    if at.minute % 30 or at.second:
+        raise ExchangeRefused("bad_time")
+    picks = candidates(student_id, at, length_min, now, only=partner_id)
     if not picks:
         raise ExchangeRefused("no_partner")
+    slot_id = _popular(_band(student_id), at - timedelta(minutes=1), at).get(at)
     respond_by = min(now + RESPOND_WITHIN, at - timedelta(minutes=30))
     row = (_t("exchange_session").insert({
         "learner_id": student_id, "partner_id": picks[0], "kind": "scheduled", "slot_id": slot_id,
@@ -781,14 +974,14 @@ async def _pass_on(s: dict, now: datetime) -> dict:
     at = _ts(s["scheduled_at"])
     asked = {r["partner_id"] for r in (_t("exchange_session").select("partner_id, scheduled_at, learner_id")
              .eq("learner_id", s["learner_id"]).eq("scheduled_at", s["scheduled_at"]).execute()).data or []}
-    picks = [p for p in candidates(s["learner_id"], s.get("slot_id"), at, int(s["length_min"]), now) if p not in asked] \
-        if s.get("slot_id") and at > now + timedelta(hours=1) else []
+    picks = [p for p in candidates(s["learner_id"], at, int(s["length_min"]), now) if p not in asked] \
+        if at > now + timedelta(hours=1) else []
     if not picks:
         await _notify(s["learner_id"], "exchange_unmatched", s["id"], "No partner for that time",
                       "Nobody could take that slot. Pick another time in the app.")
         return {"status": "declined", "passed_on": False}
     row = (_t("exchange_session").insert({
-        "learner_id": s["learner_id"], "partner_id": picks[0], "kind": "scheduled", "slot_id": s["slot_id"],
+        "learner_id": s["learner_id"], "partner_id": picks[0], "kind": "scheduled", "slot_id": s.get("slot_id"),
         "scheduled_at": s["scheduled_at"], "length_min": s["length_min"], "status": "requested",
         "respond_by": min(now + RESPOND_WITHIN, at - timedelta(minutes=30)).isoformat(),
         "lesson_number": s.get("lesson_number"),
@@ -903,7 +1096,9 @@ async def _join_url(s: dict, url: str, user_id: str, audio_only: bool) -> str | 
     return f"{url}{'&' if '?' in url else '?'}t={token}"
 
 
-async def join_call(user_id: str, session_id: str, now: datetime | None = None) -> dict:
+async def join_call(user_id: str, session_id: str, now: datetime | None = None, video: bool = False) -> dict:
+    """`video`: this person chose video for this call. It lifts a partner's low-data
+    mode for this one join only (2026-11-06); their saved setting is unchanged."""
     _require_on()
     now = now or _now()
     s = _session(session_id, user_id)
@@ -914,6 +1109,13 @@ async def join_call(user_id: str, session_id: str, now: datetime | None = None) 
         raise ExchangeRefused("no_room")
     lcard, pcard = _cards(s)
     upd = {"learner_task_id": (lcard or {}).get("id"), "partner_task_id": (pcard or {}).get("id")}
+    # The in-call chat (2026-11-06) needs the pair's conversation. `respond` makes it
+    # on accept; a session booked any other way gets it here, once.
+    conv = s.get("conversation_id")
+    if not conv:
+        conv = _conversation(s)
+        if conv:
+            upd["conversation_id"] = conv
     upd["learner_joined_at" if user_id == s["learner_id"] else "partner_joined_at"] = now.isoformat()
     _t("exchange_session").update(upd).eq("id", session_id).execute()
     is_learner = user_id == s["learner_id"]
@@ -922,7 +1124,7 @@ async def join_call(user_id: str, session_id: str, now: datetime | None = None) 
         amharic["prompt_extra"] = "Correct one thing kindly."
     english = _card_view(pcard, not is_learner, "partner")
     p = _partner(s["partner_id"]) or {}
-    low = bool(p.get("low_data")) and not is_learner
+    low = bool(p.get("low_data")) and not is_learner and not video
     # Private room: without a token nobody can enter, so no token means no call.
     from app.services.calling_service import is_livekit_room, livekit_access
     livekit = None
@@ -935,10 +1137,16 @@ async def join_call(user_id: str, session_id: str, now: datetime | None = None) 
         joined = await _join_url(s, url, user_id, audio_only=low)
     if not joined:
         raise ExchangeRefused("no_room")
+    other = s["partner_id"] if is_learner else s["learner_id"]
     return {"room_url": joined, "livekit": livekit, "role": "learner" if is_learner else "partner", "length_min": s["length_min"],
+            "conversation_id": conv, "with": _first_name(_profiles([other]).get(other)),
+            "low_data_saved": bool(p.get("low_data")) and not is_learner,
             "plan": plan(int(s["length_min"])), "cards": {"amharic": amharic, "english": english},
             "low_data": low, "data_mb": data_estimate_mb(int(s["length_min"])),
-            "data_mb_video": data_estimate_mb(int(s["length_min"]), True)}
+            "data_mb_video": data_estimate_mb(int(s["length_min"]), True),
+            # §158: the learner's "they haven't come, find someone free now", from NO_SHOW_GRACE in.
+            "chat_now": is_ready("exchange_practise_now"), "starts_at": s["scheduled_at"],
+            "no_show_after_s": int(NO_SHOW_GRACE.total_seconds())}
 
 
 async def connect_failed(user_id: str, session_id: str, now: datetime | None = None) -> dict:
@@ -1235,67 +1443,148 @@ async def record_flags(conversation_id: str, message_id: str | None, sender_id: 
 
 # ── practise now (A11, pilot) ───────────────────────────────────────────────
 
-def practise_now(user_id: str, side: str, now: datetime | None = None) -> dict:
-    """A learner or a partner joins the queue; a waiting match in the pilot band
-    is paired at once (instant session, 20 minutes)."""
+def _queue_live(q: dict, now: datetime) -> bool:
+    """A partner's "free to chat" lasts until free_until; a learner waits INSTANT_WAIT."""
+    if q.get("free_until"):
+        return _ts(q["free_until"]) > now
+    return _ts(q["joined_at"]) >= now - INSTANT_WAIT
+
+
+def _free_until(user_id: str, now: datetime) -> str | None:
+    rows = (_t("exchange_queue").select("free_until, session_id").eq("user_id", user_id).limit(1).execute()).data or []
+    if rows and rows[0].get("free_until") and not rows[0].get("session_id") and _ts(rows[0]["free_until"]) > now:
+        return rows[0]["free_until"]
+    return None
+
+
+def _free_partners(student_id: str, now: datetime, ctx: dict, only: str | None = None) -> list[dict]:
+    """Partners who switched on "free to chat" and could take this learner now, best first."""
+    rows = [q for q in (_t("exchange_queue").select("*").is_("session_id", "null").eq("side", "partner")
+            .execute()).data or [] if _queue_live(q, now)]
+    ok = [q for q in rows if _base_ok(ctx, student_id, q["user_id"], now, only)
+          and _not_busy(ctx, q["user_id"], now, INSTANT_LENGTH)]
+    return sorted(ok, key=lambda q: _rank(ctx, q["user_id"]))
+
+
+def free_now(student_id: str, now: datetime | None = None) -> dict:
+    """For the learner's "Chat now": how many partners are free, and which of their
+    favourites. Only a count for strangers; learners never pick one (A8)."""
+    if not enabled() or not is_ready("exchange_practise_now"):
+        return {"enabled": False}
+    now = now or _now()
+    if not eligible(student_id):
+        return {"enabled": True, "free": 0, "favourites": []}
+    ctx = match_context(student_id, now)
+    free = _free_partners(student_id, now, ctx)
+    favs = [q["user_id"] for q in free if q["user_id"] in ctx["favs"]]
+    names = _profiles(favs)
+    return {"enabled": True, "free": len(free),
+            "favourites": [{"id": f, "name": _first_name(names.get(f))} for f in favs]}
+
+
+def _settle_no_show(student_id: str, session_id: str, now: datetime) -> dict:
+    """The learner is in the call and the partner hasn't come after NO_SHOW_GRACE.
+    A booked session becomes a miss by the partner (as a "didn't come" rating
+    would); a chat-now session is cancelled with no penalty, since the partner
+    only said they were free. Either way it stops counting toward the allowance,
+    so the replacement chat takes its place."""
+    s = _session(session_id, student_id)
+    at = _ts(s["scheduled_at"])
+    if s["learner_id"] != student_id or s["status"] != "booked" or s.get("partner_joined_at") \
+            or not s.get("learner_joined_at") or now < at + NO_SHOW_GRACE \
+            or now > at + timedelta(minutes=int(s["length_min"])):
+        raise ExchangeRefused("not_a_no_show")
+    if s.get("kind") == "instant":
+        _t("exchange_session").update({"status": "cancelled", "cancelled_at": now.isoformat(),
+                                       "cancel_reason": "no_join", "late_cancel": False}).eq("id", session_id).execute()
+    else:
+        _t("exchange_session").update({"status": "missed", "missed_by": s["partner_id"]}).eq("id", session_id).execute()
+        _apply_reliability(s["partner_id"], now)
+    return s
+
+
+def practise_now(user_id: str, side: str, now: datetime | None = None, minutes: int | None = None,
+                 partner_id: str | None = None, replaces: str | None = None) -> dict:
+    """Chat now (§158; was the A8 practise-now pilot in one band, now every band).
+
+    A partner switches on "free to chat" for `minutes` (30, 60 or 120). A learner
+    taps Chat now: the best free partner is paired at once (a 20-minute session),
+    or the learner waits up to INSTANT_WAIT for one to switch on. `partner_id`:
+    a favourite who is free (never a stranger). `replaces`: the learner's session
+    whose partner didn't come; it's settled first, then this chat takes its place.
+    """
     _require_on()
     if not is_ready("exchange_practise_now"):
         raise ExchangeRefused("not_enabled")
     now = now or _now()
-    band = config("exchange.instant_band")
     if side == "learner":
         if not eligible(user_id):
             raise ExchangeRefused("not_eligible")
-        if _band(user_id) != band:
-            raise ExchangeRefused("not_in_pilot")
         if paused_until(user_id, now):
             raise ExchangeRefused("paused")
+        if partner_id and partner_id not in {f["partner_id"] for f in (_t("exchange_favourite").select("partner_id")
+                                             .eq("learner_id", user_id).execute()).data or []}:
+            raise ExchangeRefused("not_a_favourite")
+        if replaces:
+            _settle_no_show(user_id, replaces, now)
         if allowance(user_id, now)["left"] <= 0:
             raise ExchangeRefused("allowance_used")
+        ctx = match_context(user_id, now)
+        waiting = _free_partners(user_id, now, ctx, only=partner_id)
+        if partner_id and not waiting:
+            return {"status": "not_free"}
     else:
         p = _require_partner(user_id)
         if p["status"] != "active" or (p.get("paused_until") and _ts(p["paused_until"]) > now):
             raise ExchangeRefused("not_active")
-    other_side = "partner" if side == "learner" else "learner"
-    blocked = _blocked_pairs(user_id)
-    waiting = [q for q in (_t("exchange_queue").select("*").is_("session_id", "null").eq("side", other_side)
-               .execute()).data or [] if q["user_id"] != user_id and q.get("band") == band
-               and _ts(q["joined_at"]) >= now - INSTANT_WAIT and q["user_id"] not in blocked]
-    if side == "learner" and waiting:
-        genders = _genders([q["user_id"] for q in waiting] + [user_id])
-        waiting = [q for q in waiting if _gender_ok(genders, user_id, q["user_id"])]
-    elif waiting:
-        genders = _genders([q["user_id"] for q in waiting] + [user_id])
-        waiting = [q for q in waiting if _gender_ok(genders, q["user_id"], user_id)]
+        minutes = int(minutes or 60)
+        if minutes not in FREE_MINUTES:
+            raise ExchangeRefused("bad_value")
+        blocked = _blocked_pairs(user_id)
+        waiting = [q for q in (_t("exchange_queue").select("*").is_("session_id", "null").eq("side", "learner")
+                   .execute()).data or [] if q["user_id"] != user_id and _queue_live(q, now)
+                   and q["user_id"] not in blocked]
+        if waiting:
+            genders = _genders([q["user_id"] for q in waiting] + [user_id])
+            waiting = sorted((q for q in waiting if _gender_ok(genders, q["user_id"], user_id)),
+                             key=lambda q: str(q["joined_at"]))
     if waiting:
-        other = sorted(waiting, key=lambda q: str(q["joined_at"]))[0]
+        other = waiting[0]
         learner, partner = (user_id, other["user_id"]) if side == "learner" else (other["user_id"], user_id)
-        s = (_t("exchange_session").insert({"learner_id": learner, "partner_id": partner, "kind": "instant",
-                                            "scheduled_at": now.isoformat(), "length_min": 20, "status": "booked",
-                                            "responded_at": now.isoformat(), "lesson_number": _lesson(learner)})
-             .execute()).data[0]
+        row = {"learner_id": learner, "partner_id": partner, "kind": "instant",
+               "scheduled_at": now.isoformat(), "length_min": INSTANT_LENGTH, "status": "booked",
+               "responded_at": now.isoformat(), "lesson_number": _lesson(learner)}
+        if side == "learner" and replaces:
+            row["replaces_id"] = replaces
+        s = (_t("exchange_session").insert(row).execute()).data[0]
         conv = _conversation(s)
         if conv:
             _t("exchange_session").update({"conversation_id": conv}).eq("id", s["id"]).execute()
         _t("exchange_queue").update({"session_id": s["id"]}).eq("user_id", other["user_id"]).execute()
         _t("exchange_queue").delete().eq("user_id", user_id).execute()
         return {"status": "paired", "session_id": s["id"]}
-    _t("exchange_queue").upsert({"user_id": user_id, "side": side, "band": band, "joined_at": now.isoformat(),
-                                 "session_id": None}).execute()
+    until = now + timedelta(minutes=minutes) if side == "partner" else None
+    _t("exchange_queue").upsert({"user_id": user_id, "side": side, "band": None, "joined_at": now.isoformat(),
+                                 "session_id": None, "free_until": until.isoformat() if until else None}).execute()
+    if until:
+        return {"status": "waiting", "free_until": until.isoformat()}
     return {"status": "waiting", "within_minutes": int(INSTANT_WAIT.total_seconds() // 60)}
 
 
 def now_status(user_id: str, now: datetime | None = None) -> dict:
     now = now or _now()
-    rows = (_t("exchange_queue").select("session_id, joined_at").eq("user_id", user_id).limit(1).execute()).data or []
+    rows = (_t("exchange_queue").select("session_id, joined_at, free_until").eq("user_id", user_id).limit(1)
+            .execute()).data or []
     if not rows:
         return {"status": "none"}
     if rows[0].get("session_id"):
         _t("exchange_queue").delete().eq("user_id", user_id).execute()
         return {"status": "paired", "session_id": rows[0]["session_id"]}
-    if _ts(rows[0]["joined_at"]) < now - INSTANT_WAIT:
+    if not _queue_live(rows[0], now):
         _t("exchange_queue").delete().eq("user_id", user_id).execute()
         return {"status": "timed_out", "offer": "scheduled"}
+    if rows[0].get("free_until"):
+        return {"status": "waiting", "free_until": rows[0]["free_until"]}
     return {"status": "waiting"}
 
 
@@ -1337,7 +1626,7 @@ def export(user_id: str) -> dict:
     """A12: what Tauka holds about this partner, from the safety centre."""
     p = _partner(user_id) or {}
     p.pop("english_sample_path", None)
-    return {"partner": p, "availability": _availability(user_id),
+    return {"partner": p, "hours": [list(c) for c in sorted(_hours(user_id))],
             "sessions": (_t("exchange_session").select("id, scheduled_at, length_min, status, kind")
                          .eq("partner_id", user_id).execute()).data or [],
             "ratings_written": (_t("exchange_rating").select("session_id, helpfulness, again, note, phrase, created_at")
@@ -1370,7 +1659,7 @@ def admin_partners(actor: str, status: str | None = None) -> list[dict]:
     out = []
     for r in sorted(rows, key=lambda r: str(r.get("created_at")), reverse=True):
         n, avg = scores.get(r["user_id"], (0, 0.0))
-        out.append({**{k: r.get(k) for k in ("user_id", "status", "status_reason", "region", "amharic_variety",
+        out.append({**{k: r.get(k) for k in ("user_id", "status", "status_reason", "region", "country_code", "amharic_variety",
                                              "english_self", "english_level", "verified_at", "activated_at",
                                              "waitlisted_at", "paused_until", "created_at", "tutor_invited_at")},
                     "name": _first_name(names.get(r["user_id"])), "has_english_sample": bool(r.get("english_sample_path")),
@@ -1593,6 +1882,12 @@ async def hourly(now: datetime | None = None) -> dict:
               .lte("scheduled_at", (now - timedelta(hours=24)).isoformat()).execute()).data or []:
         # Nobody finished rating within a day. Both joined -> it happened; one
         # joined -> the other missed it; neither -> missed, nobody to blame.
+        if s.get("kind") == "instant" and not s.get("partner_joined_at"):
+            # §158: a partner who switched on "free to chat" and didn't come isn't penalised.
+            _t("exchange_session").update({"status": "cancelled", "cancelled_at": now.isoformat(),
+                                           "cancel_reason": "no_join", "late_cancel": False}).eq("id", s["id"]).execute()
+            out["settled"] += 1
+            continue
         ratings = (_t("exchange_rating").select("rater_id, other_came").eq("session_id", s["id"]).execute()).data or []
         both = s.get("learner_joined_at") and s.get("partner_joined_at")
         happened = both or (ratings and all(r["other_came"] for r in ratings))
@@ -1643,9 +1938,9 @@ def daily(now: datetime | None = None) -> dict:
         if p.get("verified_at") and not _open_reports(r["partner_id"]):
             _t("exchange_reward").update({"status": "due", "held_reason": None}).eq("id", r["id"]).execute()
             out["released"] += 1
-    stale = (now - timedelta(hours=1)).isoformat()
-    for q in (_t("exchange_queue").select("user_id, joined_at").execute()).data or []:
-        if str(q["joined_at"]) < stale:
+    for q in (_t("exchange_queue").select("user_id, joined_at, free_until, session_id").execute()).data or []:
+        live = _ts(q["free_until"]) > now if q.get("free_until") else _ts(q["joined_at"]) >= now - timedelta(hours=1)
+        if not live:
             _t("exchange_queue").delete().eq("user_id", q["user_id"]).execute()
     return out
 

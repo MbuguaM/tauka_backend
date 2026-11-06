@@ -216,6 +216,11 @@ Join could never light up; no URL → no `video_session` row), runs the exchange
 - **X-16:** summaries and AI task-card drafts never contain model-written Fidel. The model gets
   the lesson's words as a numbered list and writes `{{n}}`; `app/core/fidel_translit.py` gives
   the transliteration. A reply with Ethiopic is retried, then refused.
+- **§158 (2026-11-06, FC-053):** partners mark open hours (`exchange_partner_hour`, wall clock in
+  `exchange_partner.timezone`) and a `weekly_cap`; learners book any free half hour; the slot
+  catalogue is only "popular times". `hour_hints()` is the one rule for "learners are often free
+  then" (web and app). Chat now is every band; a partner's "free to chat" is `exchange_queue.free_until`;
+  learners see a count only (`free_now`), favourites by name. `replaces` re-pairs after a no-show.
 - WhatsApp template `exchange_request` ({1} = local time) must be registered with Meta before
   `WHATSAPP_PROVIDER=meta` sends exchange requests; reminders reuse `session_reminder_*`.
 

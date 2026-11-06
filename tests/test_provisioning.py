@@ -154,6 +154,17 @@ def test_second_call_is_a_no_op(client, headers):
     assert profiles[0]["first_name"] == "Hanna"
 
 
+def test_a_partner_signing_in_gets_no_student_row(client, headers):
+    """An exchange partner who signs in on the website's /login is provisioned as
+    usual, but is never given a learner account (A2, 2026-11-06)."""
+    store = {"user_profiles": [{"id": TEST_USER_ID, "user_type": "partner", "age_confirmed_at": "2026-11-01T00:00:00Z"}]}
+    resp = _run(client, headers, store, {"first_name": None, "age_confirmed": False})
+    assert resp.status_code == 200
+    assert resp.json()["user_type"] == "partner"
+    assert resp.json()["student_created"] is False
+    assert not [p for (t, p) in store.get("inserts", []) if t == "student"]
+
+
 # ── the caller is the JWT ────────────────────────────────────────────────────
 
 def test_body_cannot_choose_the_account(client, headers):
