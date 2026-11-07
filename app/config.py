@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     livekit_url: str = ""
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
+    # §159 XE-10: Daily signs its webhooks with this (base64, from the Daily dashboard).
+    # LiveKit webhooks are signed with livekit_api_secret. Empty = that provider's webhooks are refused.
+    daily_webhook_secret: str = ""
+    # §159 XE-24: Exchange+ (XE-25) one-month price, minor units. 0 = not on sale.
+    exchange_plus_kes_minor: int = 0
+    exchange_plus_usd_minor: int = 0
 
     # ── One-off payments (§145, payment_service): gift cards, sponsored seats ──
     # 'paystack', or 'demo' for the local test checkout (local API_BASE_URL only).

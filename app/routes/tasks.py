@@ -85,6 +85,21 @@ async def run_hourly_tasks(authorization: str | None = Header(default=None)):
     return {"ran": results}
 
 
+@router.get("/minute")
+async def run_minute_tasks(authorization: str | None = Header(default=None)):
+    """§159 XE-9: the exchange's every-minute clock (rooms 15 minutes ahead, "free to chat"
+    switches that ran out, group sessions). Called by pg_cron + pg_net with CRON_SECRET; the
+    hourly job runs the same work as a fallback."""
+    _authorise(authorization)
+    from app.tasks.communication_cycles import run_exchange_minute
+    try:
+        await run_exchange_minute()
+        return {"ran": {"exchange_minute": "ok"}}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("minute job failed")
+        return {"ran": {"exchange_minute": f"failed: {exc}"}}
+
+
 @router.get("/daily")
 async def run_daily_tasks(authorization: str | None = Header(default=None)):
     """

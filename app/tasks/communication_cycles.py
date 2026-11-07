@@ -79,15 +79,48 @@ async def run_cohort_room_cycle() -> None:
 
 
 async def run_exchange_hourly() -> None:
-    """Hourly (features addendum A): lapsed requests, rooms, unrated sessions."""
-    from app.services import exchange_service
+    """Hourly (features addendum A): lapsed requests, rooms, unrated sessions. §159: voice
+    reviews past their deadlines, and the minute clock once as a fallback (XE-9)."""
+    from app.services import exchange_presence_service, exchange_service, exchange_voice_service
     logger.info("Exchange hourly: %s", await exchange_service.hourly())
+    logger.info("Exchange voice hourly: %s", exchange_voice_service.hourly())
+    logger.info("Exchange minute (fallback): %s", await exchange_presence_service.minute())
+
+
+async def run_exchange_minute() -> None:
+    """§159 XE-9: every minute, from pg_cron + pg_net (see tauka_py_backend/scripts/exchange_minute_cron.sql)."""
+    from app.services import exchange_presence_service
+    await exchange_presence_service.minute()
 
 
 async def run_exchange_daily() -> None:
-    """Daily (A8, A9): inactive partners, the waitlist, held rewards."""
-    from app.services import exchange_service
+    """Daily (A8, A9): inactive partners, the waitlist, held rewards. §159: case patterns and
+    overdue cases, recordings past 30 days, earnings out of their hold, the Friday payout
+    batch, the minute budget, language bands, clock-change warnings for weekly groups."""
+    from datetime import datetime, timezone
+
+    from app.services import (exchange_case_service, exchange_group_service, exchange_member_service,
+                              exchange_pay_service, exchange_presence_service, exchange_recording_service,
+                              exchange_service)
     logger.info("Exchange daily: %s", exchange_service.daily())
+    for name, job in (("cases", exchange_case_service.daily), ("budget", exchange_presence_service.minute_budget),
+                      ("dst", exchange_group_service.dst_warnings)):
+        try:
+            logger.info("Exchange %s: %s", name, await job())
+        except Exception:  # noqa: BLE001
+            logger.exception("exchange daily %s failed", name)
+    for name, job in (("recordings purged", exchange_recording_service.purge), ("earnings released", exchange_pay_service.release),
+                      ("levels", exchange_member_service.refresh_levels),
+                      ("paid guests moved to phase0", exchange_member_service.graduate_paid_guests)):
+        try:
+            logger.info("Exchange %s: %s", name, job())
+        except Exception:  # noqa: BLE001
+            logger.exception("exchange daily %s failed", name)
+    if datetime.now(timezone.utc).weekday() == 4:          # Friday (doc 02 §5.2)
+        try:
+            logger.info("Exchange payout batch: %s", exchange_pay_service.build_batch())
+        except Exception:  # noqa: BLE001
+            logger.exception("exchange payout batch failed")
 
 
 async def run_summary_refresh() -> None:

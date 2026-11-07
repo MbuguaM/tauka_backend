@@ -190,6 +190,8 @@ tauka-react-web call to this API fails**, and the placement test degrades to an
 unscorable local question bank labelled "Preview mode". See
 `shared-features/CONFLICT_LOG.md` FC-013.
 | `ENCRYPTION_KEY` | For payouts | Fernet key for encrypting payout settings at rest |
+| `DAILY_WEBHOOK_SECRET` | For exchange presence | §159 XE-10: base64 secret Daily signs webhooks with. Empty = `/webhooks/daily` refuses. LiveKit webhooks use `LIVEKIT_API_SECRET` |
+| `EXCHANGE_PLUS_KES_MINOR` / `EXCHANGE_PLUS_USD_MINOR` | For Exchange+ | §159 XE-25: one month's price in minor units. 0 = not on sale |
 
 ### Server-side feature flags and the hourly job (2026-10-19)
 
@@ -221,6 +223,12 @@ Join could never light up; no URL → no `video_session` row), runs the exchange
   catalogue is only "popular times". `hour_hints()` is the one rule for "learners are often free
   then" (web and app). Chat now is every band; a partner's "free to chat" is `exchange_queue.free_until`;
   learners see a count only (`free_now`), favourites by name. `replaces` re-pairs after a no-show.
+- **§159 (2026-11-06, FC-054, exchange-extension-plan.md):** cases/sanctions/disputes
+  (`exchange_case_service`, on `concern_report`, safeguarding only), presence and the minute clock
+  (`exchange_presence_service`, `/webhooks/*`, `GET /tasks/minute`), groups (`exchange_group_service`),
+  pay (`exchange_pay_service`, never sends: no payout provider), recordings (`exchange_recording_service`),
+  voice notes (`exchange_voice_service`), guests/bands/Exchange+ (`exchange_member_service`, payment kind
+  `xp`). Routes in `routes/exchange_extra.py`. Every flag `coming`. Masking is permanent.
 - WhatsApp template `exchange_request` ({1} = local time) must be registered with Meta before
   `WHATSAPP_PROVIDER=meta` sends exchange requests; reminders reuse `session_reminder_*`.
 

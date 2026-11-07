@@ -42,7 +42,7 @@ from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 
-LENGTHS = (20, 30)
+LENGTHS = (15, 20, 30)                    # 15 = a Foundation taster (§159 XE-22)
 DEFAULT_LENGTH = 30
 RESPOND_WITHIN = timedelta(hours=12)
 JOIN_EARLY = timedelta(minutes=10)
@@ -83,6 +83,13 @@ DEFAULTS = {
     "exchange.reliability_misses": 2,
     "exchange.instant_band": "ea_gulf",       # unused since §158 (chat now is open to every band)
     "exchange.tutor_invite": {"sessions": 20, "rating": 4.5},
+    # §159 (exchange-extension-plan.md)
+    "exchange.caps": {"partner_per_day": 6, "learner_per_day": 2, "learner_future": 6},       # XE-6
+    "exchange.matching_weights": {"history": 0.25, "topics": 0.15, "reliability": 0.20, "band": 0.15,
+                                  "variety": 0.10, "newbie": 0.05},                          # XE-14
+    "exchange.minute_caps": {"required": 200000, "barter": 400000, "taster": 50000},         # XE-15
+    "exchange.taster": 1,                       # XE-22/23: extra 15-minute sessions, once per person
+    "exchange.emergency_per_30d": 1,            # XE-4
 }
 
 # The 5-minute training (A4.5): one right answer each, checked server-side.
@@ -93,13 +100,16 @@ TRAINING = [
      "options": ["Every mistake", "One thing, kindly", "None"], "answer": 1},
     {"id": "english", "q": "The learner switches to English in the Amharic half. What do you do?",
      "options": ["Switch to English too", "Gently bring it back to Amharic", "End the call"], "answer": 1},
+    # §159 XE-20: contact details are never shared on Tauka (they're hidden automatically).
     {"id": "contact", "q": "When can you share phone numbers or social media?",
-     "options": ["Any time", "Never in the first four sessions together", "Only in the first session"], "answer": 1},
+     "options": ["Any time", "Never on Tauka: they're hidden automatically", "After four sessions together"], "answer": 1},
     {"id": "report", "q": "Someone asks you for money or a gift. What do you do?",
      "options": ["Send a small amount", "Report it in the app", "Ignore it and carry on"], "answer": 1},
 ]
 
-CONDUCT_VERSION = "exchange-conduct-1"
+# exchange-conduct-2 (§159 XE-20, XE-21): contact details are never shared on Tauka, and
+# calls may be recorded (each person's own side) unless they switch it off.
+CONDUCT_VERSION = "exchange-conduct-2"
 
 # A10: hidden in a pair's chat for their first four sessions.
 _CONTACT = [
@@ -108,7 +118,16 @@ _CONTACT = [
     re.compile(r"(?<![\w@])@[A-Za-z0-9_.]{3,}"),                          # @handles
     re.compile(r"\b(?:wa\.me|t\.me|instagram\.com|facebook\.com|fb\.com|tiktok\.com|snapchat\.com)/\S+", re.I),
     re.compile(r"\b(?:whatsapp|telegram|instagram|snapchat|facebook|tiktok|imo|viber)\b[:\s]*\S*\d\S*", re.I),
+    # §159 XE-3: Kenyan and Ethiopian mobiles, written the local way (0712 345 678, +251 91 123 4567).
+    re.compile(r"(?:\+?254|\b0)[\s-]?[17]\d{2}[\s-]?\d{3}[\s-]?\d{3}\b"),
+    re.compile(r"(?:\+?251|\b0)[\s-]?[79]\d{2}[\s-]?\d{3}[\s-]?\d{3}\b"),
 ]
+# §159 XE-3: a phone number spelled out in words (English, Swahili, Amharic) is FLAGGED to
+# safeguarding, never masked: six or more number words in a row.
+_NUMBER_WORDS = ("zero|oh|one|two|three|four|five|six|seven|eight|nine|"
+                 "sifuri|moja|mbili|tatu|nne|tano|sita|saba|nane|tisa|"
+                 "ዜሮ|አንድ|ሁለት|ሶስት|ሦስት|አራት|አምስት|ስድስት|ሰባት|ስምንት|ዘጠኝ")
+_SPELLED = re.compile(rf"(?:(?:{_NUMBER_WORDS})[\s,.-]+){{5,}}(?:{_NUMBER_WORDS})", re.I)
 # X-11: signals only, for a person to read. Never a pause on their own.
 _MONEY = re.compile(r"\b(money|send me|transfer|western union|moneygram|telebirr|m-?pesa|bank account|gift card|"
                     r"airtime|visa|sponsor|invitation letter|loan|pay for my|\$\d+|birr)\b", re.I)
@@ -206,10 +225,23 @@ def _blocked_pairs(user_id: str) -> set[str]:
                 out.add(b["blocker_id"])
         except Exception as exc:  # noqa: BLE001
             logger.warning("%s read failed: %s", table, exc)
+    # §159 XE-7: members of one household are never matched either.
+    try:
+        for col, other in (("a", "b"), ("b", "a")):
+            for r in (_t("exchange_household_link").select("a, b").eq(col, user_id).execute()).data or []:
+                out.add(r[other])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("household links read failed: %s", exc)
     return out
 
 
 def _lesson(student_id: str) -> int:
+    """The lesson whose card a session uses; 0 (Foundation cards) for Phase 0 and guests."""
+    try:
+        if foundation_only(student_id):
+            return 0
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from app.services.intake_service import _current_lesson_map
         return int(_current_lesson_map([student_id]).get(student_id, 1))
@@ -217,12 +249,53 @@ def _lesson(student_id: str) -> int:
         return 1
 
 
+def enrolment_state(student_id: str) -> str:
+    """The learner's enrolment state, with one correction (2026-11-07): an exchange guest whose
+    account is on a paid plan is a guest no longer. However the plan was bought (card, M-Pesa, a
+    gift, an organisation code), the first read moves them to Phase 0, as if they had started the
+    course; phase0_service then takes them on to 'paid' as usual. The daily job sweeps the rest."""
+    st = (_t("enrolment_state").select("id, state").eq("student_id", student_id).limit(1).execute()).data or []
+    if not st:
+        return ""
+    state = str(st[0].get("state") or "")
+    if state == "exchange_guest" and _paid(student_id):
+        try:
+            _t("enrolment_state").update({"state": "phase0", "phase0_started_at": _now().isoformat()}) \
+                .eq("id", st[0]["id"]).eq("state", "exchange_guest").execute()
+            state = "phase0"
+        except Exception:  # noqa: BLE001
+            logger.warning("couldn't move paid guest %s to phase0", student_id, exc_info=True)
+    return state
+
+
+def _paid(student_id: str) -> bool:
+    rows = (_t("student").select("tier").eq("id", student_id).limit(1).execute()).data or []
+    return bool(rows) and rows[0].get("tier") not in (None, "free_tier")
+
+
+def _is_guest(student_id: str) -> bool:
+    return enrolment_state(student_id) == "exchange_guest"
+
+
+def foundation_only(student_id: str) -> bool:
+    """§159 XE-22/23: a Phase 0 learner or an exchange guest. They take Foundation
+    sessions (lesson 0 cards, tasters) only."""
+    state = enrolment_state(student_id)
+    return state.startswith("phase0") or state == "exchange_guest"
+
+
 def eligible(student_id: str) -> bool:
     """X-09: has reached content lesson 1 (FSI 1) — any progress on a content
-    unit — and is not in Phase 0. Free learners get FSI 1 free, so they qualify."""
-    st = (_t("enrolment_state").select("state").eq("student_id", student_id).limit(1).execute()).data or []
-    if st and str(st[0].get("state", "")).startswith("phase0"):
-        return False
+    unit — and is not in Phase 0. Free learners get FSI 1 free, so they qualify.
+    §159: Phase 0 learners (flag exchange_phase0) and exchange guests (flag
+    exchange_guests) qualify too, for the Foundation band (XE-22, XE-23). With guests on, Phase 0
+    learners are in as well: a guest who pays becomes a Phase 0 learner and must not lose the
+    exchange they had, and outsiders shouldn't get more than Tauka's own beginners."""
+    state = enrolment_state(student_id)
+    if state == "exchange_guest":
+        return is_ready("exchange_guests")
+    if state.startswith("phase0"):
+        return is_ready("exchange_phase0") or is_ready("exchange_guests")
     progress = (_t("unit_progress").select("unit_id, status").eq("user_id", student_id).execute()).data or []
     unit_ids = [p["unit_id"] for p in progress if p.get("status") in ("in_progress", "completed")]
     if not unit_ids:
@@ -261,6 +334,9 @@ def allowance(student_id: str, now: datetime | None = None) -> dict:
             .gte("scheduled_at", since.isoformat()).execute()).data or []
     used = sum(1 for r in rows if r["status"] in ("requested", "booked", "completed")
                or (r["status"] == "missed" and r.get("missed_by") == student_id))
+    # §159 XE-22/23: one extra taster for anyone who has never had an exchange.
+    ever = (_t("exchange_session").select("id").eq("learner_id", student_id).limit(1).execute()).data or []
+    limit = int(limit) + (int(config("exchange.taster") or 0) if not ever and not rows else 0)
     return {"period": period, "limit": int(limit), "used": used, "left": max(0, int(limit) - used)}
 
 
@@ -272,8 +348,10 @@ def misses(user_id: str, now: datetime) -> int:
     since = (now - MISS_WINDOW).isoformat()
     n = 0
     for side in ("learner_id", "partner_id"):
-        for r in (_t("exchange_session").select("id, status, missed_by, late_cancel, cancelled_by, scheduled_at")
+        for r in (_t("exchange_session").select("id, status, missed_by, late_cancel, cancelled_by, scheduled_at, excused_reason")
                   .eq(side, user_id).gte("scheduled_at", since).execute()).data or []:
+            if r.get("excused_reason"):
+                continue                      # §159 XE-4: force majeure, an emergency, a first time-zone slip
             if r["status"] == "missed" and r.get("missed_by") == user_id:
                 n += 1
             elif r["status"] == "cancelled" and r.get("late_cancel") and r.get("cancelled_by") == user_id:
@@ -299,13 +377,97 @@ def _last_miss(user_id: str, now: datetime) -> datetime | None:
     since = (now - MISS_WINDOW).isoformat()
     when = []
     for side in ("learner_id", "partner_id"):
-        for r in (_t("exchange_session").select("status, missed_by, late_cancel, cancelled_by, scheduled_at, cancelled_at")
+        for r in (_t("exchange_session").select("status, missed_by, late_cancel, cancelled_by, scheduled_at, cancelled_at, excused_reason")
                   .eq(side, user_id).gte("scheduled_at", since).execute()).data or []:
+            if r.get("excused_reason"):
+                continue
             if r["status"] == "missed" and r.get("missed_by") == user_id:
                 when.append(_ts(r["scheduled_at"]))
             elif r["status"] == "cancelled" and r.get("late_cancel") and r.get("cancelled_by") == user_id:
                 when.append(_ts(r.get("cancelled_at") or r["scheduled_at"]))
     return max(when) if when else None
+
+
+def _country_of(user_id: str) -> str | None:
+    p = _partner(user_id)
+    if p and p.get("country_code"):
+        return p["country_code"]
+    return None
+
+
+def _outage(country: str | None, at: datetime) -> bool:
+    """XE-4: ops declared an outage for that country at that time (exchange_outage)."""
+    if not country:
+        return False
+    try:
+        rows = (_t("exchange_outage").select("starts_at, ends_at").eq("country_code", country).execute()).data or []
+    except Exception:  # noqa: BLE001
+        return False
+    return any(_ts(r["starts_at"]) <= at <= _ts(r["ends_at"]) for r in rows)
+
+
+def _first_timezone_slip(user_id: str, session: dict) -> bool:
+    """XE-4 (doc 01 E25): someone's first miss within 30 days of their first session is
+    forgiven, because the commonest cause is reading a time in the wrong clock."""
+    side = "partner_id" if session.get("partner_id") == user_id else "learner_id"
+    rows = (_t("exchange_session").select("id, status, missed_by, scheduled_at, excused_reason")
+            .eq(side, user_id).execute()).data or []
+    if not rows:
+        return False
+    first = min(_ts(r["scheduled_at"]) for r in rows)
+    if _ts(session["scheduled_at"]) - first > timedelta(days=30):
+        return False
+    return not any(r.get("excused_reason") == "first_timezone" for r in rows)
+
+
+def _settle_miss(session: dict, missed_by: str | None, now: datetime) -> None:
+    """Record a miss, excused where XE-4 says so, and apply reliability otherwise."""
+    upd = {"status": "missed", "missed_by": missed_by}
+    reason = None
+    if missed_by:
+        if _outage(_country_of(missed_by), _ts(session["scheduled_at"])):
+            reason = "force_majeure"
+        elif _first_timezone_slip(missed_by, session):
+            reason = "first_timezone"
+    if reason:
+        upd.update({"excused_reason": reason, "excused_at": now.isoformat()})
+    _t("exchange_session").update(upd).eq("id", session["id"]).execute()
+    if missed_by and not reason:
+        _apply_reliability(missed_by, now)
+
+
+def _accrue(session_id: str, now: datetime) -> None:
+    """§159 XE-24: a paid partner's earning for a settled session (behind paid_partners)."""
+    try:
+        from app.services import exchange_pay_service as pay
+        rows = (_t("exchange_session").select("*").eq("id", session_id).limit(1).execute()).data or []
+        if rows:
+            pay.accrue_pair(rows[0], now)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("exchange pay accrual for %s failed: %s", session_id, exc)
+
+
+def excuse(user_id: str, session_id: str, now: datetime | None = None) -> dict:
+    """XE-4: one self-declared emergency (power cut, illness) per 30 days removes the miss."""
+    _require_on()
+    now = now or _now()
+    s = _session(session_id, user_id)
+    mine = (s["status"] == "missed" and s.get("missed_by") == user_id) or \
+        (s["status"] == "cancelled" and s.get("late_cancel") and s.get("cancelled_by") == user_id)
+    if not mine or s.get("excused_reason"):
+        raise ExchangeRefused("nothing_to_excuse")
+    since = (now - timedelta(days=30)).isoformat()
+    used = 0
+    for side in ("learner_id", "partner_id"):
+        used += sum(1 for r in (_t("exchange_session").select("id, excused_reason, excused_at").eq(side, user_id)
+                    .execute()).data or [] if r.get("excused_reason") == "emergency" and str(r.get("excused_at") or "") >= since)
+    if used >= int(config("exchange.emergency_per_30d") or 1):
+        raise ExchangeRefused("excuse_used")
+    _t("exchange_session").update({"excused_reason": "emergency", "excused_at": now.isoformat()}).eq("id", session_id).execute()
+    p = _partner(user_id)
+    if p and p.get("paused_until") and misses(user_id, now) < int(config("exchange.reliability_misses") or 2):
+        _t("exchange_partner").update({"paused_until": None, "updated_at": now.isoformat()}).eq("user_id", user_id).execute()
+    return {"ok": True}
 
 
 def _apply_reliability(user_id: str, now: datetime) -> None:
@@ -536,6 +698,14 @@ def _record_consent(user_id: str, purpose: str, granted: bool, version: str = CO
             raise
 
 
+def _conduct_version(user_id: str) -> str | None:
+    """The version of the conduct rules this person last agreed to (exchange-conduct-2: §159)."""
+    rows = (_t("consent_record").select("policy_version, granted, at").eq("subject_id", user_id)
+            .eq("purpose", "exchange_conduct").execute()).data or []
+    rows = [r for r in rows if r.get("granted")]
+    return max(rows, key=lambda r: str(r.get("at") or ""))["policy_version"] if rows else None
+
+
 def agree_conduct(user_id: str) -> dict:
     """A4.4: no contact swapping in the first four sessions, no money or gift
     requests, no romantic approaches, recording only by mutual consent, the
@@ -668,6 +838,9 @@ def partner_state(user_id: str, now: datetime | None = None) -> dict:
         "weekly_cap": int(p.get("weekly_cap") or 3),
         "free_until": _free_until(user_id, now),
         "chat_now": is_ready("exchange_practise_now"),
+        "roles": p.get("roles") or ["barter"],
+        "plus_until": p.get("plus_until"),
+        "conduct_current": bool(p.get("conduct_agreed_at")) and _conduct_version(user_id) == CONDUCT_VERSION,
         "waitlist": {"position": pos, "weeks": estimated_wait_weeks(pos, now)} if pos else None,
         "sessions": sessions,
         "rewards": sorted(rewards, key=lambda r: str(r["created_at"]), reverse=True),
@@ -694,7 +867,10 @@ def _sessions_for(user_id: str, side: str, now: datetime) -> list[dict]:
                     "status": r["status"], "kind": r["kind"], "respond_by": r.get("respond_by"),
                     "with": _first_name(names.get(r[other_side])), "with_id": r[other_side],
                     "rated": r["id"] in rated, "conversation_id": r.get("conversation_id"),
-                    "joinable": _joinable(r, now)})
+                    "joinable": _joinable(r, now),
+                    # §159 XE-4: whether this person may use their emergency excuse on it
+                    "missed_by": r.get("missed_by"), "cancelled_by": r.get("cancelled_by"),
+                    "late_cancel": bool(r.get("late_cancel")), "excused_reason": r.get("excused_reason")})
     return out
 
 
@@ -717,7 +893,12 @@ def learner_state(student_id: str, now: datetime | None = None) -> dict:
             "sessions": _sessions_for(student_id, "learner_id", now),
             "favourites": [{"id": f, "name": _first_name(names.get(f))} for f in favs],
             # §158: open to every band (it was a pilot in exchange.instant_band).
-            "practise_now": is_ready("exchange_practise_now")}
+            "practise_now": is_ready("exchange_practise_now"),
+            # §159 XE-22/23: Foundation sessions only (Phase 0 learners and guests), and a
+            # guest's pointers to the course after each session.
+            "foundation_only": foundation_only(student_id) if ok else False,
+            "guest_next": {"placement": "/test/amharic", "pricing": "/pricing", "downloads": "/downloads"}
+            if ok and _is_guest(student_id) else None}
 
 
 def _active_partners() -> dict[str, dict]:
@@ -773,6 +954,7 @@ def match_context(student_id: str, now: datetime) -> dict:
     miss: dict[str, int] = {}
     busy: dict[str, list[datetime]] = {}
     weeks: dict[str, dict] = {}
+    days: dict[str, dict] = {}
     for r in sessions:
         pid = r["partner_id"]
         if (r["status"] == "missed" and r.get("missed_by") == pid) or \
@@ -780,6 +962,9 @@ def match_context(student_id: str, now: datetime) -> dict:
             miss[pid] = miss.get(pid, 0) + 1
         if r["status"] in ("requested", "booked"):
             busy.setdefault(pid, []).append(_ts(r["scheduled_at"]))
+        if r["status"] in ("requested", "booked", "completed") and pid in zones:
+            d = _ts(r["scheduled_at"]).astimezone(zones[pid]).date()
+            days.setdefault(pid, {})[d] = days.get(pid, {}).get(d, 0) + 1
         # The weekly cap counts booked sessions, never chats the partner switched on.
         if (r.get("kind") or "scheduled") == "scheduled" and r["status"] in ("requested", "booked", "completed") \
                 and pid in zones:
@@ -788,17 +973,35 @@ def match_context(student_id: str, now: datetime) -> dict:
     me = _profiles([student_id]).get(student_id) or {}
     favs = {f["partner_id"] for f in (_t("exchange_favourite").select("partner_id").eq("learner_id", student_id)
             .execute()).data or []}
-    return {"band": _band(student_id), "pool": pool, "hours": hours, "zones": zones, "weeks": weeks,
+    return {"band": _band(student_id), "pool": pool, "hours": hours, "zones": zones, "weeks": weeks, "days": days,
+            "suspended": _suspended_ids(ids, now),
+            "soft": _soft_inputs(student_id, ids),
             "miss": miss, "busy": busy,
             "blocked": _blocked_pairs(student_id), "genders": _genders(ids + [student_id]),
             "low_english": (me.get("first_language") or "en") != "en", "pairs": _pair_counts(student_id),
             "favs": favs, "scores": _partner_scores(ids)}
 
 
+def _suspended_ids(ids: list[str], now: datetime) -> set[str]:
+    """§159 XE-11: partners under an interim suspension, a running suspension or a ban."""
+    if not ids:
+        return set()
+    out = set()
+    try:
+        for r in (_t("exchange_sanction").select("user_id, kind, ends_at, lifted_at").in_("user_id", ids).execute()).data or []:
+            if r.get("lifted_at"):
+                continue
+            if r["kind"] in ("ban", "interim") or (r["kind"].startswith("suspend") and r.get("ends_at") and _ts(r["ends_at"]) > now):
+                out.add(r["user_id"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sanctions read failed: %s", exc)
+    return out
+
+
 def _base_ok(c: dict, student_id: str, pid: str, now: datetime, only: str | None = None) -> bool:
     """The checks that don't depend on the time: active, not blocked or paused, gender."""
     pool = c["pool"]
-    return (pid in pool and pid != student_id and pid not in c["blocked"]
+    return (pid in pool and pid != student_id and pid not in c["blocked"] and pid not in c.get("suspended", ())
             and not (pool[pid].get("paused_until") and _ts(pool[pid]["paused_until"]) > now)
             and (only is None or pid == only)
             and _gender_ok(c["genders"], student_id, pid))
@@ -810,12 +1013,77 @@ def _not_busy(c: dict, pid: str, at: datetime, length_min: int) -> bool:
 
 
 def _time_ok(c: dict, pid: str, at: datetime, length_min: int) -> bool:
-    """Free at that time: marked the hours, under the weekly cap, nothing else booked."""
+    """Free at that time: marked the hours, under the weekly cap and the daily cap (§159
+    XE-6), nothing else booked."""
     zone = c["zones"][pid]
     cap = int(c["pool"][pid].get("weekly_cap") or 3)
+    per_day = int((config("exchange.caps") or {}).get("partner_per_day") or 6)
+    day = at.astimezone(zone).date()
     return (_covers(c["hours"].get(pid, set()), zone, at, length_min)
             and c["weeks"].get(pid, {}).get(_week(at, zone), 0) < cap
+            and c.get("days", {}).get(pid, {}).get(day, 0) < per_day
             and _not_busy(c, pid, at, length_min))
+
+
+def _soft_inputs(student_id: str, ids: list[str]) -> dict:
+    """What the soft factors read (§159 XE-14). Every read is best effort."""
+    out = {"pair_avg": {}, "levels": {}, "varieties": set(), "partner_n": {}}
+    try:
+        mine = (_t("exchange_session").select("id, partner_id, status, scheduled_at").eq("learner_id", student_id)
+                .eq("status", "completed").execute()).data or []
+        if mine:
+            ratings = {r["session_id"]: r["helpfulness"] for r in (_t("exchange_rating").select("session_id, rater_id, helpfulness")
+                       .in_("session_id", [m["id"] for m in mine]).eq("rater_id", student_id).execute()).data or []}
+            by: dict[str, list] = {}
+            for m in mine:
+                if m["id"] in ratings:
+                    by.setdefault(m["partner_id"], []).append(ratings[m["id"]])
+            out["pair_avg"] = {k: sum(v) / len(v) for k, v in by.items()}
+            recent = [m["partner_id"] for m in mine if _ts(m["scheduled_at"]) > _now() - timedelta(days=30)]
+            if recent:
+                out["varieties"] = {(p.get("amharic_variety"), p.get("variety_note")) for p in
+                                    (_t("exchange_partner").select("user_id, amharic_variety, variety_note")
+                                     .in_("user_id", recent).execute()).data or []}
+        if ids:
+            out["levels"] = {r["user_id"]: r["band"] for r in (_t("exchange_language_level").select("user_id, language, band")
+                             .in_("user_id", ids + [student_id]).execute()).data or []
+                             if (r["user_id"] == student_id and r["language"] == "am") or
+                             (r["user_id"] != student_id and r["language"] == "en")}
+            if student_id in out["levels"]:
+                out["levels"]["__me__"] = out["levels"].pop(student_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("soft matching inputs failed: %s", exc)
+    return out
+
+
+_BANDS = ("foundation", "conversation", "advanced")
+
+
+def _soft(c: dict, pid: str) -> float:
+    """A 0-1 score from the weighted soft factors. It only orders partners who already
+    passed every hard rule and the A8 order's earlier keys."""
+    w = config("exchange.matching_weights") or {}
+    soft = c.get("soft") or {}
+    p = c["pool"][pid]
+    score = 0.0
+    avg = (soft.get("pair_avg") or {}).get(pid)
+    if avg is not None:
+        score += float(w.get("history", 0)) * max(0.0, (avg - 3) / 2)
+    n, rating = c["scores"].get(pid, (0, 0.0))
+    if n:
+        score += float(w.get("reliability", 0)) * max(0.0, 1 - c["miss"].get(pid, 0) / 2)
+    levels = soft.get("levels") or {}
+    mine, theirs = levels.get("__me__"), levels.get(pid)
+    if mine in _BANDS and theirs in _BANDS:
+        score += float(w.get("band", 0)) * (1 - abs(_BANDS.index(mine) - _BANDS.index(theirs)) / 2)
+    variety = (p.get("amharic_variety"), p.get("variety_note"))
+    if soft.get("varieties") and variety not in soft["varieties"]:
+        score += float(w.get("variety", 0))
+    if n < 3:
+        score += float(w.get("newbie", 0))
+    if p.get("plus_until") and _ts(p["plus_until"]) > _now():
+        score += 0.3                    # §159 XE-25: Exchange+ members are matched first (doc 01 §6.3)
+    return round(score, 4)
 
 
 def _rank(c: dict, pid: str):
@@ -827,7 +1095,7 @@ def _rank(c: dict, pid: str):
     rotation = new_pair if first_four else (0 if pid in c["favs"] else 1)
     n, avg = c["scores"].get(pid, (0, 0.0))
     priority = 0 if (n >= PRIORITY_SESSIONS and avg >= PRIORITY_RATING) else 1
-    return (english_fit, c["miss"].get(pid, 0), rotation, priority, n, pid)
+    return (english_fit, c["miss"].get(pid, 0), rotation, priority, -_soft(c, pid), n, pid)
 
 
 def candidates(student_id: str, at: datetime, length_min: int, now: datetime,
@@ -852,6 +1120,21 @@ def _popular(band: str | None, now: datetime, until: datetime) -> dict[datetime,
             out[at] = c["id"]
             at = next_at(c, at + timedelta(minutes=1))
     return out
+
+
+def _learner_caps(student_id: str, at: datetime, now: datetime) -> None:
+    """§159 XE-6: at most 2 sessions a day and 6 booked ahead (exchange.caps)."""
+    caps = config("exchange.caps") or {}
+    rows = (_t("exchange_session").select("id, status, scheduled_at").eq("learner_id", student_id)
+            .gte("scheduled_at", (now - timedelta(days=1)).isoformat()).execute()).data or []
+    live = [r for r in rows if r["status"] in ("requested", "booked")]
+    if len([r for r in live if _ts(r["scheduled_at"]) > now]) >= int(caps.get("learner_future") or 6):
+        raise ExchangeRefused("too_many_bookings")
+    same_day = [r for r in rows if r["status"] in ("requested", "booked", "completed")
+                and abs((_ts(r["scheduled_at"]) - at).total_seconds()) < 12 * 3600
+                and _ts(r["scheduled_at"]).date() == at.date()]
+    if len(same_day) >= int(caps.get("learner_per_day") or 2):
+        raise ExchangeRefused("daily_cap")
 
 
 def _first_start(now: datetime) -> datetime:
@@ -894,6 +1177,9 @@ def book(student_id: str, slot_id: str | None, at_iso: str, length_min: int = DE
         raise ExchangeRefused("not_eligible")
     if paused_until(student_id, now):
         raise ExchangeRefused("paused")
+    from app.services.exchange_case_service import suspended
+    if suspended(student_id, now):
+        raise ExchangeRefused("suspended")
     if allowance(student_id, now)["left"] <= 0:
         raise ExchangeRefused("allowance_used")
     at = _ts(at_iso)
@@ -904,6 +1190,9 @@ def book(student_id: str, slot_id: str | None, at_iso: str, length_min: int = DE
         raise ExchangeRefused("not_a_favourite")
     if at.minute % 30 or at.second:
         raise ExchangeRefused("bad_time")
+    _learner_caps(student_id, at, now)
+    if length_min == 15 and not foundation_only(student_id):
+        raise ExchangeRefused("bad_length")          # tasters are for Foundation (XE-22)
     picks = candidates(student_id, at, length_min, now, only=partner_id)
     if not picks:
         raise ExchangeRefused("no_partner")
@@ -1031,7 +1320,7 @@ def _cards(s: dict) -> tuple[dict | None, dict | None]:
     """(learner card for the lesson, partner card for their English level)."""
     tasks = (_t("peer_task").select("*").eq("active", True).execute()).data or []
     learner = [t for t in tasks if (t.get("side") or "learner") == "learner" and t.get("lesson_number") is not None]
-    lesson = int(s.get("lesson_number") or 1)
+    lesson = int(s["lesson_number"]) if s.get("lesson_number") is not None else 1   # 0 = Foundation (§159)
     fit = [t for t in learner if int(t["lesson_number"]) <= lesson] or learner
     lcard = max(fit, key=lambda t: (int(t["lesson_number"]), str(t.get("created_at")))) if fit else None
     p = _partner(s["partner_id"]) or {}
@@ -1205,7 +1494,8 @@ def _learner_deck_add(student_id: str, phrase: str, meaning: str | None) -> None
 
 async def rate(user_id: str, session_id: str, helpfulness: int, again: bool, other_came: bool = True,
                flag_moment_s: int | None = None, note: str | None = None, phrase: str | None = None,
-               meaning: str | None = None, now: datetime | None = None) -> dict:
+               meaning: str | None = None, now: datetime | None = None,
+               target_lang_kept: int | None = None, corrected_me: int | None = None) -> dict:
     _require_on()
     now = now or _now()
     s = _session(session_id, user_id)
@@ -1217,7 +1507,10 @@ async def rate(user_id: str, session_id: str, helpfulness: int, again: bool, oth
         _t("exchange_rating").insert({"session_id": session_id, "rater_id": user_id, "helpfulness": int(helpfulness),
                                       "again": bool(again), "other_came": bool(other_came),
                                       "flag_moment_s": flag_moment_s, "note": (note or "").strip()[:500] or None,
-                                      "phrase": (phrase or "").strip()[:200] or None}).execute()
+                                      "phrase": (phrase or "").strip()[:200] or None,
+                                      # §159 XE-5: "stayed in my target language", "corrected me when I was wrong"
+                                      "target_lang_kept": target_lang_kept if target_lang_kept in (1, 2, 3, 4, 5) else None,
+                                      "corrected_me": corrected_me if corrected_me in (1, 2, 3, 4, 5) else None}).execute()
     except Exception as exc:  # noqa: BLE001
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise ExchangeRefused("already_rated") from exc
@@ -1233,14 +1526,14 @@ async def rate(user_id: str, session_id: str, helpfulness: int, again: bool, oth
                                           "phrase": phrase.strip()[:200]}).execute()
     other = s["partner_id"] if user_id == s["learner_id"] else s["learner_id"]
     if not other_came:
-        _t("exchange_session").update({"status": "missed", "missed_by": other}).eq("id", session_id).execute()
-        _apply_reliability(other, now)
+        _settle_miss(s, other, now)
         return {"ok": True, "status": "missed"}
     ratings = (_t("exchange_rating").select("rater_id, other_came").eq("session_id", session_id).execute()).data or []
     if {r["rater_id"] for r in ratings} >= {s["learner_id"], s["partner_id"]} and all(r["other_came"] for r in ratings) \
             and s["status"] == "booked":
         _t("exchange_session").update({"status": "completed"}).eq("id", session_id).execute()
         await _after_completed(s["partner_id"], now)
+        _accrue(session_id, now)
         return {"ok": True, "status": "completed"}
     return {"ok": True, "status": s["status"]}
 
@@ -1259,6 +1552,15 @@ def report(user_id: str, session_id: str, category: str, detail: str | None) -> 
         "category": category, "detail": (detail or "").strip()[:1000] or None,
         "session_type": "exchange_session", "session_id": session_id,
     }).execute()).data[0]
+    # §159 XE-11: severity, deadlines, an interim suspension for S3/S4; XE-21: the session's
+    # recordings are kept past 30 days while the case is open.
+    try:
+        from app.services import exchange_case_service as cases
+        from app.services.exchange_recording_service import hold_for_case
+        cases.triage(row)
+        hold_for_case(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("exchange report triage for %s failed: %s", row["id"], exc)
     _check_reports(other)
     return {"id": row["id"], "status": "open"}
 
@@ -1414,11 +1716,15 @@ def filter_message(conversation_id: str, sender_id: str, content: str) -> tuple[
         return content, info
     if not pair:
         return content, info
-    if _completed_between(*pair) < ROTATION_SESSIONS:
-        content, info["masked"] = mask_contacts(content)
+    # §159 XE-20: contact details are hidden in every exchange chat, always (it was the
+    # pair's first four sessions). An attempt is counted only behind exchange_contact_cases.
+    content, info["masked"] = mask_contacts(content)
+    if info["masked"] and is_ready("exchange_contact_cases"):
+        info["flags"].append("contact_attempt")
     if is_ready("exchange_message_flags"):
-        kinds = [k for k, rx in (("money", _MONEY), ("romance", _ROMANCE)) if rx.search(content)]
-        info["flags"] = kinds
+        kinds = [k for k, rx in (("money", _MONEY), ("romance", _ROMANCE), ("spelled_number", _SPELLED))
+                 if rx.search(content)]
+        info["flags"] += kinds
     return content, info
 
 
@@ -1431,6 +1737,11 @@ async def record_flags(conversation_id: str, message_id: str | None, sender_id: 
     for k in kinds:
         _t("exchange_message_flag").insert({"conversation_id": conversation_id, "message_id": message_id,
                                             "sender_id": sender_id, "kind": k}).execute()
+    if "contact_attempt" in kinds:
+        # §159 XE-20: three attempts in 30 days open an S2 case automatically (doc 06 §13).
+        from app.services import exchange_case_service as cases
+        await cases.contact_attempts(sender_id)
+        kinds = [k for k in kinds if k != "contact_attempt"]
     if kinds:
         to = _safeguarding_emails()
         if to:
@@ -1498,8 +1809,7 @@ def _settle_no_show(student_id: str, session_id: str, now: datetime) -> dict:
         _t("exchange_session").update({"status": "cancelled", "cancelled_at": now.isoformat(),
                                        "cancel_reason": "no_join", "late_cancel": False}).eq("id", session_id).execute()
     else:
-        _t("exchange_session").update({"status": "missed", "missed_by": s["partner_id"]}).eq("id", session_id).execute()
-        _apply_reliability(s["partner_id"], now)
+        _settle_miss(s, s["partner_id"], now)
     return s
 
 
@@ -1525,6 +1835,9 @@ def practise_now(user_id: str, side: str, now: datetime | None = None, minutes: 
         if partner_id and partner_id not in {f["partner_id"] for f in (_t("exchange_favourite").select("partner_id")
                                              .eq("learner_id", user_id).execute()).data or []}:
             raise ExchangeRefused("not_a_favourite")
+        from app.services.exchange_case_service import suspended
+        if suspended(user_id, now):
+            raise ExchangeRefused("suspended")
         if replaces:
             _settle_no_show(user_id, replaces, now)
         if allowance(user_id, now)["left"] <= 0:
@@ -1894,12 +2207,12 @@ async def hourly(now: datetime | None = None) -> dict:
         if happened:
             _t("exchange_session").update({"status": "completed"}).eq("id", s["id"]).execute()
             await _after_completed(s["partner_id"], now)
+            _accrue(s["id"], now)
         else:
             missed_by = s["partner_id"] if s.get("learner_joined_at") else (
                 s["learner_id"] if s.get("partner_joined_at") else None)
-            _t("exchange_session").update({"status": "missed", "missed_by": missed_by}).eq("id", s["id"]).execute()
-            if missed_by:
-                _apply_reliability(missed_by, now)
+            _settle_miss(s, missed_by, now)
+            _accrue(s["id"], now)
         out["settled"] += 1
     return out
 

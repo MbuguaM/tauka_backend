@@ -176,9 +176,10 @@ def test_eligibility_and_allowance(db):
     db.rows["unit_progress"] = [{"user_id": L, "unit_id": "u0", "status": "completed"}]
     assert not ex.eligible(L)                         # only a preliminary lesson
     db.rows["unit_progress"] = [{"user_id": L, "unit_id": "u1", "status": "in_progress"}]
-    assert ex.allowance(L, NOW) == {"period": "month", "limit": 4, "used": 0, "left": 4}
+    # §159: someone who has never had an exchange gets one taster on top (exchange.taster).
+    assert ex.allowance(L, NOW) == {"period": "month", "limit": 5, "used": 0, "left": 5}
     db.rows["student"][0]["tier"] = "intensive_tier"
-    assert ex.allowance(L, NOW)["period"] == "week" and ex.allowance(L, NOW)["limit"] == 5
+    assert ex.allowance(L, NOW)["period"] == "week" and ex.allowance(L, NOW)["limit"] == 6   # 5 + the taster
 
 
 # 5
@@ -304,7 +305,7 @@ def test_chat_filter(db):
     assert ex.filter_message("c1", P1, "send me money, my love")[1]["flags"] == ["money", "romance"]
     for i in range(4):
         _booked(db, at=SAT - timedelta(days=10 + i), status="completed")
-    assert ex.filter_message("c1", P1, "+251 911 234 567")[0] == "+251 911 234 567"   # after four sessions
+    assert "911" not in ex.filter_message("c1", P1, "+251 911 234 567")[0]          # §159: still hidden after four
 
 
 # 10

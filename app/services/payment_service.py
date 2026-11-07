@@ -42,6 +42,7 @@ KINDS = {
     "sp": ("sponsorship", "/gift/thanks", "/gift"),
     "mo": ("billing_payment", "/account/subscription", "/account/subscription"),   # a month of a plan (§151)
     "tk": ("ai_token_purchase", "/account/ai-tokens", "/account/ai-tokens"),       # an AI token pack (§154)
+    "xp": ("exchange_plus_purchase", "/exchange?plus=done", "/exchange"),           # a month of Exchange+ (§159)
 }
 
 
@@ -150,6 +151,9 @@ async def settle(reference: str, amount_minor: int, currency: str) -> bool:
     elif kind == "tk":
         from app.services.ai_token_service import paid as tokens_paid
         await tokens_paid(row_id)
+    elif kind == "xp":
+        from app.services.exchange_member_service import plus_paid
+        await plus_paid(row_id)
     else:
         from app.services.sponsorship_service import paid
         await paid(row_id)

@@ -19,8 +19,9 @@ async def send_message(
     if not allowed:
         raise HTTPException(status_code=429, detail=reason)
 
-    # Exchange chats (§142, A10): contact details hidden for a pair's first four
-    # sessions; money/romance flags for safeguarding only behind their own flag.
+    # Exchange chats (§142, A10; §159 XE-20): contact details always hidden; attempts
+    # counted behind exchange_contact_cases; money/romance/spelled-number flags for
+    # safeguarding only behind exchange_message_flags.
     content, safety = req.content, {"masked": False, "flags": []}
     try:
         from app.services.exchange_service import filter_message

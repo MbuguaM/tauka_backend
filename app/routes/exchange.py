@@ -48,7 +48,8 @@ async def _arun(fn, *a, **k):
         _refused(exc)
 
 
-Category = Literal["harassment", "contact_details", "inappropriate_content", "wellbeing", "safety", "other"]
+Category = Literal["harassment", "contact_details", "inappropriate_content", "wellbeing", "safety", "other",
+                   "sexual_conduct", "hate_speech", "threat", "fraud", "underage", "solicitation", "account_sharing"]   # §159
 Level = Literal["A2", "B1", "B2", "C1"]
 
 
@@ -85,7 +86,7 @@ class Book(BaseModel):
     # §158: any half hour a partner is free. Old clients still send a catalogue id; it's ignored.
     slot_id: Optional[str] = Field(None, pattern=r"^[0-9a-fA-F-]{36}$")
     at: str = Field(..., max_length=40)
-    length_min: Literal[20, 30] = 30
+    length_min: Literal[15, 20, 30] = 30          # 15 = a Foundation taster (§159 XE-22)
     partner_id: Optional[str] = Field(None, pattern=r"^[0-9a-fA-F-]{36}$")
 
 
@@ -112,6 +113,8 @@ class Rate(BaseModel):
     note: Optional[str] = Field(None, max_length=500)
     phrase: Optional[str] = Field(None, max_length=200)
     meaning: Optional[str] = Field(None, max_length=200)
+    target_lang_kept: Optional[int] = Field(None, ge=1, le=5)    # §159 XE-5
+    corrected_me: Optional[int] = Field(None, ge=1, le=5)
 
 
 class Report(BaseModel):
@@ -297,7 +300,7 @@ async def ended(session_id: str, req: Ended, user_id: str = Depends(get_current_
 @router.post("/sessions/{session_id}/rate")
 async def rate(session_id: str, req: Rate, user_id: str = Depends(get_current_user)):
     return await _arun(svc.rate, user_id, session_id, req.helpfulness, req.again, req.other_came, req.flag_moment_s,
-                       req.note, req.phrase, req.meaning)
+                       req.note, req.phrase, req.meaning, None, req.target_lang_kept, req.corrected_me)
 
 
 @router.post("/sessions/{session_id}/report")

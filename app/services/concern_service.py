@@ -31,7 +31,9 @@ from app.services.supabase_client import supabase_admin as db
 
 logger = logging.getLogger(__name__)
 
-CATEGORIES = ("harassment", "contact_details", "inappropriate_content", "wellbeing", "safety", "other")
+CATEGORIES = ("harassment", "contact_details", "inappropriate_content", "wellbeing", "safety", "other",
+              # §159 (exchange doc 03 §4): the misconduct taxonomy, so a report maps to a severity
+              "sexual_conduct", "hate_speech", "threat", "fraud", "underage", "solicitation", "account_sharing")
 ABOUT = ("tutor", "learner", "someone_else", "myself")
 OUTCOMES = ("no_action", "advice_given", "warning_issued", "removed", "escalated")
 OVERDUE = timedelta(hours=24)
@@ -139,8 +141,8 @@ def queue(actor: str) -> list[dict]:
     rows = (_t("concern_report").select("*").order("created_at").execute()).data or []
     now = _now()
     rows = [r for r in rows if r["status"] != "closed" or (_ts(r.get("closed_at")) or now) >= now - timedelta(days=30)]
-    names = _names([r["reporter_id"] for r in rows] + [r["about_user_id"] for r in rows if r.get("about_user_id")])
-    return [{**r, "reporter_name": names.get(r["reporter_id"]), "about_name": names.get(r.get("about_user_id")),
+    names = _names([r["reporter_id"] for r in rows if r.get("reporter_id")] + [r["about_user_id"] for r in rows if r.get("about_user_id")])
+    return [{**r, "reporter_name": names.get(r.get("reporter_id")) or ("Automatic rule" if r.get("automatic") else None), "about_name": names.get(r.get("about_user_id")),
              "overdue": r["status"] == "open" and now - _ts(r["created_at"]) >= OVERDUE} for r in rows]
 
 

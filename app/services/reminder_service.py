@@ -80,6 +80,23 @@ async def seat_alerts() -> int:
     return n
 
 
+def _exchange_when(uid: str, at: datetime, fallback: str) -> str:
+    """§159 XE-1: a partner's own zone (exchange_partner.timezone), and both clocks for anyone
+    in Ethiopia: "Sat 8 Nov, 19:00 EAT · Ethiopian time 1:00 night (ማታ)"."""
+    from app.core.ethiopian_clock import EAT, both_clocks, in_ethiopia
+    from app.services.makeup_delivery import local_time
+    try:
+        p = (_t("exchange_partner").select("timezone, country_code").eq("user_id", uid).limit(1).execute()).data or []
+        tz = (p[0].get("timezone") if p else None)
+        country = p[0].get("country_code") if p else None
+        if in_ethiopia(country, tz or fallback.rsplit("(", 1)[-1].rstrip(")")):
+            eat = at.astimezone(EAT)
+            return f"{eat:%a} {eat.day} {eat:%b}, {both_clocks(at)}"
+        return local_time(at, tz) if tz else fallback
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
 async def hourly(now: datetime | None = None) -> dict:
     from app.services.makeup_delivery import _zones, local_time
     from app.services.notify_service import notify
@@ -94,6 +111,8 @@ async def hourly(now: datetime | None = None) -> dict:
             zones = _zones(s["people"]) if s["people"] else {}
             for uid in s["people"]:
                 when = local_time(s["starts_at"], zones.get(uid, "UTC"))
+                if s.get("kind") == "exchange":
+                    when = _exchange_when(uid, s["starts_at"], when)
                 title = "Tomorrow: " + s["name"] if kind == "session_24h" else "In an hour: " + s["name"]
                 template = "session_reminder_24h" if kind == "session_24h" else "session_reminder_1h"
                 try:

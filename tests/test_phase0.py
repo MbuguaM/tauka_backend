@@ -135,6 +135,16 @@ def test_start_twice_keeps_one_row_and_updates_pledge(db):
     assert out["pace_pledge_hours"] == 20 and out["band"] == "asia"
 
 
+def test_exchange_guest_who_starts_the_course_moves_to_phase0(db):
+    # §160: a guest (§159 XE-23) already has a row; starting Phase 0 must move it on, not keep it a guest.
+    db.rows["enrolment_state"].append({"id": "e-guest", "student_id": TEST_USER_ID, "course_id": COURSE,
+                                       "state": "exchange_guest"})
+    out = phase0_service.start(TEST_USER_ID, COURSE, pace_pledge_hours=5, band=None)
+    assert len(db.rows["enrolment_state"]) == 1
+    assert out["state"] == "phase0"
+    assert db.rows["enrolment_state"][0]["phase0_started_at"]
+
+
 def test_not_enrolled_until_started(db):
     assert phase0_service.status(TEST_USER_ID, COURSE) == {"enrolled": False}
 

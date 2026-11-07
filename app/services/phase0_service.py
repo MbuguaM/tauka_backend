@@ -278,6 +278,9 @@ def start(student_id: str, course_id: str, *, pace_pledge_hours: int | None, ban
         row = _row(student_id, course_id)
     else:
         update = {k: v for k, v in (("pace_pledge_hours", pace_pledge_hours), ("band", band)) if v is not None}
+        # An exchange guest (§159 XE-23) who takes up the course starts Phase 0 here.
+        if row.get("state") == "exchange_guest":
+            update.update({"state": "phase0", "phase0_started_at": datetime.now(timezone.utc).isoformat()})
         if update:
             _t("enrolment_state").update(update).eq("id", row["id"]).execute()
             row = {**row, **update}

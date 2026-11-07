@@ -228,6 +228,9 @@ app.include_router(unit_assessments.router, prefix="/unit-assessments")
 
 # Exchange partners (features addendum A, §142), behind the exchange_partners flag.
 app.include_router(exchange.router, prefix="/exchange")
+from app.routes import exchange_extra  # noqa: E402  (§159, exchange-extension-plan.md)
+app.include_router(exchange_extra.router, prefix="/exchange")
+app.include_router(exchange_extra.webhooks, prefix="/webhooks")
 
 # Learner-language lesson summaries (features addendum B, §143), behind lesson_summaries.
 app.include_router(summaries.router, prefix="/summaries")
