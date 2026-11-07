@@ -38,6 +38,21 @@ def _ts(v) -> datetime:
     return v if isinstance(v, datetime) else datetime.fromisoformat(str(v).replace("Z", "+00:00"))
 
 
+def _is_host(user_id: str, vs: dict) -> bool:
+    """The tutor teaching it: the session's tutor, a pod session's leading tutor (a cover tutor
+    too), or a 1-on-1's tutor. They may share their screen (2026-11-07)."""
+    if vs.get("tutor_id") == user_id:
+        return True
+    vs_id = vs["id"]
+    # app.cohort_session (tauka-flutter): lead_tutor_id is who leads this occurrence.
+    if any(p.get("lead_tutor_id") == user_id for p in
+           (_t("cohort_session").select("lead_tutor_id").eq("video_session_id", vs_id).limit(1).execute()).data or []):
+        return True
+    # app.one_to_one_session (tauka-flutter): tutor_id teaches it.
+    return any(o.get("tutor_id") == user_id for o in
+               (_t("one_to_one_session").select("tutor_id").eq("video_session_id", vs_id).limit(1).execute()).data or [])
+
+
 def _in_session(user_id: str, vs: dict) -> bool:
     if vs.get("tutor_id") == user_id:
         return True
@@ -79,7 +94,9 @@ def join(user_id: str, video_session_id: str, now: datetime | None = None) -> di
         raise JoinRefused("not_open")
     if now > closes:
         raise JoinRefused("closed")
-    access = calling_service.livekit_access(vs["video_call_url"], user_id, _display_name(user_id), int(closes.timestamp()))
+    # Tutor-led sessions: everyone may type questions and raise a hand; the tutor may share their screen.
+    access = calling_service.livekit_access(vs["video_call_url"], user_id, _display_name(user_id), int(closes.timestamp()),
+                                            can_chat=True, host=_is_host(user_id, vs))
     if not access:
         raise JoinRefused("not_configured")
     return access

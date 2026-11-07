@@ -156,10 +156,16 @@ async def create_daily_meeting_token(room_name: str, user_id: str, user_name: st
 # ---------------------------------------------------------------------------
 
 def generate_livekit_token(user_id: str, room: str, name: str | None = None, expires_at: int | None = None,
-                           audio_only: bool = False) -> dict:
+                           audio_only: bool = False, can_chat: bool = False,
+                           can_share_screen: bool = False) -> dict:
     """
-    Generates a signed LiveKit access token for one person in one room. Screen sharing and data
-    messages aren't granted. `audio_only` (a partner in low-data mode) can't send video.
+    Generates a signed LiveKit access token for one person in one room. `audio_only` (a partner in
+    low-data mode) can't send video.
+
+    2026-11-07: tutor-led sessions turn on `can_chat` (typed questions as data messages, and a
+    raised hand as the person's own attribute) and, for the session's tutor, `can_share_screen`.
+    Exchanges and peer sessions keep both off: their chat goes through the contact-detail masking
+    of /messages/send, which a data message would skip.
 
     Returns dict with keys: token, room_url (the signalling address), vendor
     """
@@ -186,8 +192,10 @@ def generate_livekit_token(user_id: str, room: str, name: str | None = None, exp
             "roomJoin": True,
             "room": room,
             "canPublish": True,
-            "canPublishSources": ["microphone"] if audio_only else ["microphone", "camera"],
-            "canPublishData": False,
+            "canPublishSources": (["microphone"] if audio_only else ["microphone", "camera"])
+                                 + (["screen_share", "screen_share_audio"] if can_share_screen and not audio_only else []),
+            "canPublishData": can_chat,
+            "canUpdateOwnMetadata": can_chat,
             "canSubscribe": True,
         },
     }
@@ -206,11 +214,14 @@ def generate_livekit_token(user_id: str, room: str, name: str | None = None, exp
 
 
 def livekit_access(url: str, user_id: str, name: str | None, expires_at: int, audio_only: bool = False,
-                   start_video_off: bool = False) -> dict | None:
-    """What a client needs to join a `livekit://` room, or None if LiveKit isn't configured."""
+                   start_video_off: bool = False, can_chat: bool = False, host: bool = False) -> dict | None:
+    """What a client needs to join a `livekit://` room, or None if LiveKit isn't configured.
+    `host` is the session's tutor: they may share their screen, and the app shows them the lesson panel."""
     if not livekit_configured():
         return None
     room = url[len(LIVEKIT_SCHEME):]
-    token = generate_livekit_token(user_id, room, name, expires_at, audio_only)
+    token = generate_livekit_token(user_id, room, name, expires_at, audio_only, can_chat=can_chat,
+                                   can_share_screen=host)
     return {"server_url": token["room_url"], "token": token["token"], "room": room,
-            "start_video_off": start_video_off or audio_only, "audio_only": audio_only}
+            "start_video_off": start_video_off or audio_only, "audio_only": audio_only,
+            "can_chat": can_chat, "host": host}

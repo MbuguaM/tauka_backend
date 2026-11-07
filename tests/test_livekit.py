@@ -116,6 +116,27 @@ def test_a_one_to_one_student_gets_one(db):
     assert js.join("s9", "vs1", AT)["room"] == "pod-1"
 
 
+# 2026-11-07: tutor-led sessions allow typed questions and a raised hand; the tutor may share their screen.
+@pytest.mark.parametrize("user,host", [("tutor1", True), ("cover1", True), ("learner1", False), ("member1", False)])
+def test_tutor_led_sessions_allow_chat_and_only_the_tutor_shares(db, user, host):
+    a = js.join(user, "vs1", AT)
+    v = _claims(a["token"])["video"]
+    assert a["can_chat"] is True and a["host"] is host
+    assert v["canPublishData"] is True and v["canUpdateOwnMetadata"] is True
+    assert ("screen_share" in v["canPublishSources"]) is host
+
+
+def test_a_one_to_one_tutor_is_the_host(db):
+    db.rows["one_to_one_session"].append({"video_session_id": "vs1", "student_id": "s9", "tutor_id": "t9"})
+    assert js.join("t9", "vs1", AT)["host"] is True
+
+
+def test_exchanges_and_peers_keep_chat_and_sharing_off(lk):
+    v = _claims(cs.livekit_access("livekit://ex-1", "u1", None, 2_000_000_000)["token"])["video"]
+    assert v["canPublishData"] is False and v["canUpdateOwnMetadata"] is False
+    assert "screen_share" not in v["canPublishSources"]
+
+
 def test_the_display_name_comes_from_the_profile(db):
     assert _claims(js.join("learner1", "vs1", AT)["token"])["name"] == "Hanna"
 
