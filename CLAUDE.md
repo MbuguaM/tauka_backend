@@ -263,7 +263,8 @@ in `app/models/schemas.py`. Note `deepseek` has no `image_translation` support.
 
 ## Calling Service
 
-Vendor selection order: `app.video_vendor_config` active row → `"daily"`.
+Vendor selection order: `app.video_vendor_config` active row → `"livekit"` if its three settings are set → `"daily"`.
+**LiveKit is the default for all sessions since 2026-11-07**: production's active row is `livekit` (fallback `daily`); the Daily row is kept inactive. Exchange calls still move to Daily after two LiveKit faults (XE-18).
 `POST /calls/token` was removed 2026-11-05 (ALL-27): nothing called it, and its Daily path gave any signed-in user a room and token for any name.
 A LiveKit room has no page: it's stored as `livekit://<name>` in the same column as a Daily address, and each person joins with their own token from `POST /calls/sessions/{id}/join` (`session_join_service`, which checks they're in the session and it's near its time), or from the exchange and peer join routes. Scheduled sessions call `calling_service.create_room`, never a provider directly. A session keeps the provider it was made with.
 

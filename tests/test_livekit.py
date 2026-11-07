@@ -55,8 +55,38 @@ async def test_a_livekit_room_needs_no_call_to_anyone(lk):
     daily.assert_not_awaited()
 
 
+def _vendor_rows(rows=None, fail=False):
+    """A stand-in for supabase.schema('app').table('video_vendor_config')...execute()."""
+    from unittest.mock import MagicMock
+    chain = MagicMock()
+    for m in ("schema", "table", "select", "eq", "is_", "limit"):
+        getattr(chain, m).return_value = chain
+    if fail:
+        chain.execute.side_effect = RuntimeError("down")
+    else:
+        chain.execute.return_value = MagicMock(data=rows or [])
+    return chain
+
+
+def test_the_active_row_decides(lk):
+    with patch.object(cs, "supabase", _vendor_rows([{"vendor": "daily"}])):
+        assert cs.get_active_vendor() == "daily"
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_livekit_is_the_default_without_a_row(lk, fail):
+    # 2026-11-07: LiveKit is the default for all sessions.
+    with patch.object(cs, "supabase", _vendor_rows(fail=fail)):
+        assert cs.get_active_vendor() == "livekit"
+
+
+def test_daily_when_livekit_has_no_keys():
+    with patch.object(cs, "supabase", _vendor_rows()), patch.object(cs.settings, "livekit_url", ""):
+        assert cs.get_active_vendor() == "daily"
+
+
 @pytest.mark.asyncio
-async def test_daily_stays_the_default_path():
+async def test_daily_rooms_still_work_when_chosen():
     daily = AsyncMock(return_value="https://x.daily.co/pod-1")
     with patch.object(cs, "get_active_vendor", return_value="daily"), patch.object(cs, "create_daily_room", daily):
         assert await cs.create_room("pod-1", 123, {"a": 1}) == "https://x.daily.co/pod-1"

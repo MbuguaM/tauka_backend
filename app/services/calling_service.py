@@ -4,8 +4,8 @@ Multi-vendor calling service.
 Supported vendors: daily | livekit
 
 Vendor selection order (app.video_vendor_config, via get_active_vendor):
-  1. Active row in app.video_vendor_config (Supabase)
-  2. Falls back to "daily" if there is none
+  1. Active row in app.video_vendor_config (Supabase). Production: livekit since 2026-11-07
+  2. With none: "livekit" if its keys are set, else "daily"
 
 HOW A ROOM IS STORED
   A session's room is one text column, whichever provider made it. Daily has a page address.
@@ -43,7 +43,9 @@ def get_active_vendor() -> str:
             return result.data[0]["vendor"]
     except Exception:
         pass
-    return "daily"
+    # 2026-11-07 (developer): LiveKit is the default for every session. With no active row,
+    # or the row unreadable, it's LiveKit when its keys are set, else Daily.
+    return "livekit" if livekit_configured() else "daily"
 
 
 LIVEKIT_SCHEME = "livekit://"
